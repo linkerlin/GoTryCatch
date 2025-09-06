@@ -40,10 +40,10 @@ See `examples/main.go` for comprehensive examples including:
 
 ```bash
 # Quick demo
-go run cmd/demo
+go run ./cmd/demo
 
 # Full examples
-go run examples/main.go
+go run ./examples
 
 # Run tests
 go test -v

@@ -176,6 +176,19 @@ err := errors.NewBusinessLogicError("age_limit", "用户必须年满18岁")
 - 嵌套异常处理
 - 真实场景应用示例
 
+### 运行示例
+
+```bash
+# 快速演示
+go run ./cmd/demo
+
+# 完整示例
+go run ./examples
+
+# 运行测试
+go test -v
+```
+
 ## 许可证
 
 MIT License
