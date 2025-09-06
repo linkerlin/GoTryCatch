@@ -5,11 +5,15 @@
 ## 特性
 
 - 🎯 **类型安全**: 使用 Go 泛型确保异常处理的类型安全
-- 🔗 **链式调用**: 支持多个 catch 块的链式调用
+- 🔗 **部分链式调用**: 支持 `CatchAny` 和 `Finally` 的链式调用
 - 🏷️ **多种异常类型**: 内置常用的异常类型（验证、数据库、网络、业务逻辑错误）
 - 🔄 **Finally 支持**: 保证清理代码的执行
 - 📦 **零依赖**: 纯 Go 实现，无外部依赖
 - 🚀 **高性能**: 基于 Go 的 panic/recover 机制，性能开销极小
+
+## 重要说明
+
+⚠️ **链式调用限制**: 由于 Go 语言的限制，方法不能有泛型类型参数，因此不能直接写 `tb.Catch[ErrorType](handler)`。需要使用函数式调用：`gotrycatch.Catch[ErrorType](tb, handler)`。但是 `CatchAny` 和 `Finally` 方法支持链式调用。
 
 ## 安装
 
@@ -167,6 +171,36 @@ err := errors.NewBusinessLogicError("age_limit", "用户必须年满18岁")
 - 需要 Go 1.18+ （泛型支持）
 - 与标准库完全兼容
 - 可以与现有的错误处理代码共存
+
+## 常见问题 (FAQ)
+
+### Q: 为什么不能使用完全的链式调用？
+
+A: 由于 Go 语言的限制，方法不能有泛型类型参数。因此不能写：
+
+```go
+// ❌ 这样写是不支持的
+tb := gotrycatch.Try(func() { ... }).Catch[ErrorType](handler)
+```
+
+只能使用函数式调用：
+
+```go
+// ✅ 正确的写法
+tb := gotrycatch.Try(func() { ... })
+tb = gotrycatch.Catch[ErrorType](tb, handler)
+```
+
+但是 `CatchAny` 和 `Finally` 方法支持链式调用：
+
+```go
+// ✅ 这样是可以的
+tb.CatchAny(handler).Finally(cleanup)
+```
+
+### Q: 性能如何？
+
+A: 异常处理基于 Go 的 panic/recover 机制，只在实际发生异常时才有性能开销。正常执行路径的性能开销接近零。
 
 ## 示例
 
