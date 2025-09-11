@@ -1,3 +1,244 @@
+[English](#english) | [中文](#chinese)
+
+<a id="english"></a>
+
+# GoTryCatch
+
+A type-safe exception handling library based on Go generics that brings try-catch-like capabilities to Go.
+
+## Features
+
+- 🎯 Type-safe: Uses Go generics to ensure type-safe exception handling
+- 🔗 Partial chaining: Supports chaining for `CatchAny` and `Finally`
+- 🏷️ Multiple error kinds: Built-in common error types (validation, database, network, business logic)
+- 🔄 Finally support: Guarantees cleanup code execution
+- 📦 Zero dependency: Pure Go implementation, no external dependencies
+- 🚀 High performance: Built on Go's panic/recover with minimal overhead
+
+## Important Note
+
+⚠️ Chaining limitation: Due to Go's limitation that methods cannot have generic type parameters, you cannot write `tb.Catch[ErrorType](handler)`. Use the functional form instead: `gotrycatch.Catch[ErrorType](tb, handler)`. `CatchAny` and `Finally` do support chaining.
+
+## Installation
+
+```bash
+go get github.com/linkerlin/gotrycatch
+```
+
+## Quick Start
+
+### Basic usage
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/linkerlin/gotrycatch"
+    "github.com/linkerlin/gotrycatch/errors"
+)
+
+func main() {
+    tb := gotrycatch.Try(func() {
+        // Code that may panic
+        gotrycatch.Throw(errors.NewValidationError("email", "invalid format", 1001))
+    })
+
+    tb = gotrycatch.Catch[errors.ValidationError](tb, func(err errors.ValidationError) {
+        fmt.Printf("Validation error: %s (field: %s, code: %d)\n", err.Message, err.Field, err.Code)
+    })
+
+    tb.Finally(func() {
+        fmt.Println("Cleanup done")
+    })
+}
+```
+
+### Handling multiple error types
+
+```go
+tb := gotrycatch.Try(func() {
+    // Business logic
+    processUserData()
+})
+
+tb = gotrycatch.Catch[errors.ValidationError](tb, func(err errors.ValidationError) {
+    fmt.Printf("Validation failed: %s\n", err.Message)
+})
+
+tb = gotrycatch.Catch[errors.DatabaseError](tb, func(err errors.DatabaseError) {
+    fmt.Printf("Database error: %s\n", err.Operation)
+})
+
+tb = gotrycatch.Catch[errors.NetworkError](tb, func(err errors.NetworkError) {
+    if err.Timeout {
+        fmt.Printf("Network timeout: %s\n", err.URL)
+    } else {
+        fmt.Printf("Network error %d: %s\n", err.StatusCode, err.URL)
+    }
+})
+
+tb = tb.CatchAny(func(err interface{}) {
+    fmt.Printf("Unknown error: %v\n", err)
+})
+
+tb.Finally(func() {
+    fmt.Println("Processing done")
+})
+```
+
+### Exception handling with return value
+
+```go
+tb := gotrycatch.Try(func() {
+    validateUserInput(userData)
+})
+
+result, tb := gotrycatch.CatchWithReturn[errors.ValidationError](tb, func(err errors.ValidationError) interface{} {
+    return map[string]interface{}{
+        "success": false,
+        "error":   err.Error(),
+        "code":    err.Code,
+    }
+})
+
+if result != nil {
+    fmt.Printf("Result: %+v\n", result)
+}
+```
+
+## Built-in Error Types
+
+The library provides the following common error types:
+
+### ValidationError
+
+```go
+err := errors.NewValidationError("email", "invalid email format", 1001)
+```
+
+### DatabaseError
+
+```go
+err := errors.NewDatabaseError("SELECT", "users", sqlErr)
+```
+
+### NetworkError
+
+```go
+// HTTP error
+err := errors.NewNetworkError("http://api.example.com", 404)
+
+// Timeout error
+err := errors.NewNetworkTimeoutError("http://api.example.com")
+```
+
+### BusinessLogicError
+
+```go
+err := errors.NewBusinessLogicError("age_limit", "user must be at least 18 years old")
+```
+
+## API
+
+### Core functions
+
+#### `Try(fn func()) *TryBlock`
+Executes the given function and captures any panic. Returns a `TryBlock` for subsequent handling.
+
+#### `Catch[T any](tb *TryBlock, handler func(T)) *TryBlock`
+Handles exceptions of type T. If the panic value can be converted to T, the handler is invoked.
+
+#### `CatchWithReturn[T any](tb *TryBlock, handler func(T) interface{}) (interface{}, *TryBlock)`
+Like `Catch`, but allows the handler to return a value.
+
+#### `(*TryBlock) CatchAny(handler func(interface{})) *TryBlock`
+Handles any unhandled exception regardless of its type.
+
+#### `(*TryBlock) Finally(fn func())`
+Executes cleanup code whether or not an exception occurred. If an exception remains unhandled, it is rethrown after the finally block.
+
+#### `Throw(err interface{})`
+Throws an exception (creates a panic).
+
+## Best Practices
+
+1. Order `Catch` blocks by specificity: most specific first, more general later
+2. Always use `Finally` to ensure resource cleanup
+3. Prefer predefined error types over raw strings or numbers
+4. Avoid throwing in `Finally` to not mask the original exception
+
+## Performance
+
+- Built on Go's panic/recover; cost occurs only when exceptions actually happen
+- Near-zero overhead on the normal execution path
+- Try-Catch blocks can be nested without significant impact
+
+## Compatibility
+
+- Requires Go 1.18+ (generics)
+- Fully compatible with the standard library
+- Can coexist with existing error-handling code
+
+## FAQ
+
+### Q: Why can't I use full method chaining?
+
+A: Because methods cannot have generic type parameters in Go. So this is not supported:
+```go
+// ❌ Not supported
+tb := gotrycatch.Try(func() { ... }).Catch[ErrorType](handler)
+```
+
+Use the functional form instead:
+```go
+// ✅ Correct
+tb := gotrycatch.Try(func() { ... })
+tb = gotrycatch.Catch[ErrorType](tb, handler)
+```
+
+But `CatchAny` and `Finally` support chaining:
+```go
+// ✅ Supported
+tb.CatchAny(handler).Finally(cleanup)
+```
+
+### Q: How's the performance?
+
+A: Exception handling relies on Go's panic/recover. Overhead is incurred only when an exception actually occurs. The normal path overhead is near zero.
+
+## Examples
+
+See the `examples/` directory for more:
+
+- Basic usage
+- Handling multiple error types
+- Nested exception handling
+- Real-world scenarios
+
+### Run examples
+
+```bash
+# Quick demo
+go run ./cmd/demo
+
+# Full examples
+go run ./examples
+
+# Run tests
+go test -v
+```
+
+## License
+
+MIT License
+
+A lib for using trycatch in Go!
+
+---
+
+<a id="chinese"></a>
+
 # GoTryCatch
 
 一个基于 Go 泛型的类型安全异常处理库，提供类似于其他语言中 try-catch 语句的功能。
