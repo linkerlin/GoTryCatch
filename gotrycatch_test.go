@@ -1466,3 +1466,391 @@ func TestErrorInterface_PanicValue(t *testing.T) {
 		t.Error("Expected error Catch handler to be called")
 	}
 }
+
+// ============================================
+// Coverage Improvement Tests
+// ============================================
+
+func TestCatchAnyWithResult_BasicUsage(t *testing.T) {
+	var caught bool
+	var caughtErr interface{}
+
+	tb := TryWithResult(func() int {
+		panic("any error")
+	})
+
+	tb = CatchAnyWithResult(tb, func(err interface{}) {
+		caught = true
+		caughtErr = err
+	})
+
+	if !caught {
+		t.Error("Expected CatchAnyWithResult handler to be called")
+	}
+	if caughtErr != "any error" {
+		t.Errorf("Expected 'any error', got %v", caughtErr)
+	}
+	if !tb.IsHandled() {
+		t.Error("Expected error to be handled")
+	}
+}
+
+func TestCatchAnyWithResult_NilTryBlock(t *testing.T) {
+	var nilTb *TryBlockWithResult[int]
+
+	result := CatchAnyWithResult(nilTb, func(err interface{}) {
+		t.Error("Handler should not be called for nil TryBlock")
+	})
+
+	if result == nil {
+		t.Error("Expected non-nil TryBlockWithResult for nil input")
+	}
+}
+
+func TestCatchAnyWithResult_NilHandler(t *testing.T) {
+	tb := TryWithResult(func() int {
+		panic("error")
+	})
+
+	result := CatchAnyWithResult[int](tb, nil)
+	if result != tb {
+		t.Error("Expected same TryBlock when handler is nil")
+	}
+}
+
+func TestCatchAnyWithResult_AlreadyHandled(t *testing.T) {
+	var catchAnyCalled bool
+
+	tb := TryWithResult(func() int {
+		panic("error")
+	})
+
+	tb = CatchWithResult[int, string](tb, func(err string) {
+		// Handle error
+	})
+
+	tb = CatchAnyWithResult(tb, func(err interface{}) {
+		catchAnyCalled = true
+	})
+
+	if catchAnyCalled {
+		t.Error("CatchAnyWithResult should not be called when error already handled")
+	}
+}
+
+func TestCatchAnyWithResult_NoError(t *testing.T) {
+	var handlerCalled bool
+
+	tb := TryWithResult(func() int {
+		return 42
+	})
+
+	tb = CatchAnyWithResult(tb, func(err interface{}) {
+		handlerCalled = true
+	})
+
+	if handlerCalled {
+		t.Error("Handler should not be called when no error")
+	}
+}
+
+func TestTryBlockWithResult_Finally_NilHandler(t *testing.T) {
+	tb := TryWithResult(func() int {
+		return 42
+	})
+
+	result := tb.Finally(nil)
+	if result != 42 {
+		t.Errorf("Expected 42, got %d", result)
+	}
+}
+
+func TestTryBlockWithResult_Finally_NilTryBlock(t *testing.T) {
+	var nilTb *TryBlockWithResult[int]
+
+	var finallyCalled bool
+	result := nilTb.Finally(func() {
+		finallyCalled = true
+	})
+
+	if !finallyCalled {
+		t.Error("Finally should be called even for nil TryBlock")
+	}
+	if result != 0 {
+		t.Errorf("Expected zero value 0, got %d", result)
+	}
+}
+
+func TestTryBlockWithResult_Finally_UnhandledErrorRethrow(t *testing.T) {
+	defer func() {
+		if r := recover(); r != r {
+			t.Errorf("Expected panic with 'unhandled', got %v", r)
+		}
+	}()
+
+	tb := TryWithResult(func() int {
+		panic("unhandled")
+	})
+
+	tb.Finally(func() {
+		// Cleanup
+	})
+}
+
+func TestCatchWithResult_NilTryBlock(t *testing.T) {
+	var nilTb *TryBlockWithResult[int]
+
+	result := CatchWithResult[int, string](nilTb, func(err string) {
+		t.Error("Handler should not be called for nil TryBlock")
+	})
+
+	if result == nil {
+		t.Error("Expected non-nil TryBlockWithResult for nil input")
+	}
+}
+
+func TestCatchWithResult_NilHandler(t *testing.T) {
+	tb := TryWithResult(func() int {
+		panic("error")
+	})
+
+	result := CatchWithResult[int, string](tb, nil)
+	if result != tb {
+		t.Error("Expected same TryBlock when handler is nil")
+	}
+}
+
+func TestCatchWithResult_AlreadyHandled(t *testing.T) {
+	var secondHandlerCalled bool
+
+	tb := TryWithResult(func() int {
+		panic("error")
+	})
+
+	tb = CatchWithResult[int, string](tb, func(err string) {
+		// First handler
+	})
+
+	tb = CatchWithResult[int, string](tb, func(err string) {
+		secondHandlerCalled = true
+	})
+
+	if secondHandlerCalled {
+		t.Error("Second handler should not be called when error already handled")
+	}
+}
+
+func TestCatchWithResult_NonMatchingType(t *testing.T) {
+	var handlerCalled bool
+
+	tb := TryWithResult(func() int {
+		panic(123) // int panic, not string
+	})
+
+	tb = CatchWithResult[int, string](tb, func(err string) {
+		handlerCalled = true
+	})
+
+	if handlerCalled {
+		t.Error("Handler should not be called for non-matching type")
+	}
+	if tb.IsHandled() {
+		t.Error("Error should not be marked as handled")
+	}
+}
+
+func TestCatchWithReturn_BasicUsage(t *testing.T) {
+	tb := Try(func() {
+		panic("error")
+	})
+
+	result, tb := CatchWithReturn(tb, func(err string) interface{} {
+		return "recovered: " + err
+	})
+
+	if result != "recovered: error" {
+		t.Errorf("Expected 'recovered: error', got %v", result)
+	}
+	if !tb.IsHandled() {
+		t.Error("Expected error to be handled")
+	}
+}
+
+func TestCatchWithReturn_NilTryBlock(t *testing.T) {
+	var nilTb *TryBlock
+
+	result, tb := CatchWithReturn(nilTb, func(err string) interface{} {
+		return "should not be called"
+	})
+
+	if result != nil {
+		t.Errorf("Expected nil result, got %v", result)
+	}
+	if tb == nil {
+		t.Error("Expected non-nil TryBlock for nil input")
+	}
+}
+
+func TestCatchWithReturn_NilHandler(t *testing.T) {
+	tb := Try(func() {
+		panic("error")
+	})
+
+	result, returnedTb := CatchWithReturn[string](tb, nil)
+	if result != nil {
+		t.Errorf("Expected nil result, got %v", result)
+	}
+	if returnedTb != tb {
+		t.Error("Expected same TryBlock when handler is nil")
+	}
+}
+
+func TestCatchWithReturn_NonMatchingType(t *testing.T) {
+	tb := Try(func() {
+		panic(123) // int panic, not string
+	})
+
+	result, tb := CatchWithReturn(tb, func(err string) interface{} {
+		return "should not be called"
+	})
+
+	if result != nil {
+		t.Errorf("Expected nil result for non-matching type, got %v", result)
+	}
+	if tb.IsHandled() {
+		t.Error("Error should not be marked as handled")
+	}
+}
+
+func TestCatchWithReturn_NoError(t *testing.T) {
+	tb := Try(func() {
+		// No panic
+	})
+
+	result, _ := CatchWithReturn(tb, func(err string) interface{} {
+		return "should not be called"
+	})
+
+	if result != nil {
+		t.Errorf("Expected nil result when no error, got %v", result)
+	}
+}
+
+func TestCatchWithReturn_AlreadyHandled(t *testing.T) {
+	tb := Try(func() {
+		panic("error")
+	})
+
+	tb = Catch[string](tb, func(err string) {
+		// First handler
+	})
+
+	result, _ := CatchWithReturn(tb, func(err string) interface{} {
+		return "should not be called"
+	})
+
+	if result != nil {
+		t.Errorf("Expected nil result when already handled, got %v", result)
+	}
+}
+
+func TestCatch_NilTryBlock(t *testing.T) {
+	var nilTb *TryBlock
+
+	result := Catch[string](nilTb, func(err string) {
+		t.Error("Handler should not be called for nil TryBlock")
+	})
+
+	if result == nil {
+		t.Error("Expected non-nil TryBlock for nil input")
+	}
+}
+
+func TestCatch_NilHandler_EdgeCase(t *testing.T) {
+	tb := Try(func() {
+		panic("error")
+	})
+
+	result := Catch[string](tb, nil)
+	if result != tb {
+		t.Error("Expected same TryBlock when handler is nil")
+	}
+}
+
+func TestCatch_AlreadyHandled(t *testing.T) {
+	var secondHandlerCalled bool
+
+	tb := Try(func() {
+		panic("error")
+	})
+
+	tb = Catch[string](tb, func(err string) {
+		// First handler
+	})
+
+	tb = Catch[string](tb, func(err string) {
+		secondHandlerCalled = true
+	})
+
+	if secondHandlerCalled {
+		t.Error("Second handler should not be called when error already handled")
+	}
+}
+
+func TestCatch_NoError(t *testing.T) {
+	var handlerCalled bool
+
+	tb := Try(func() {
+		// No panic
+	})
+
+	tb = Catch[string](tb, func(err string) {
+		handlerCalled = true
+	})
+
+	if handlerCalled {
+		t.Error("Handler should not be called when no error")
+	}
+}
+
+func TestFinally_NoPanicNoError(t *testing.T) {
+	var finallyCalled bool
+
+	tb := Try(func() {
+		// No panic
+	})
+
+	tb.Finally(func() {
+		finallyCalled = true
+	})
+
+	if !finallyCalled {
+		t.Error("Finally should be called")
+	}
+}
+
+func TestCatchWithReturn_TypeMatch(t *testing.T) {
+	tb := Try(func() {
+		panic("string error")
+	})
+
+	result, tb := CatchWithReturn(tb, func(err string) interface{} {
+		return "handled: " + err
+	})
+
+	if result != "handled: string error" {
+		t.Errorf("Expected 'handled: string error', got %v", result)
+	}
+	if !tb.IsHandled() {
+		t.Error("Expected error to be handled")
+	}
+}
+
+func TestVersion_Exists(t *testing.T) {
+	if Version == "" {
+		t.Error("Version should not be empty")
+	}
+	if Version != "1.2.0" {
+		t.Logf("Version is %s", Version)
+	}
+}

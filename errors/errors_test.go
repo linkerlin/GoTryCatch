@@ -420,3 +420,456 @@ func TestErrorString_Format(t *testing.T) {
 		})
 	}
 }
+
+// ============================================
+// Coverage Improvement Tests for Error Types
+// ============================================
+
+func TestValidationError_Unwrap(t *testing.T) {
+	err := NewValidationError("field", "message", 1001)
+	if err.Unwrap() != nil {
+		t.Error("ValidationError.Unwrap() should always return nil")
+	}
+}
+
+func TestValidationError_Is(t *testing.T) {
+	err1 := NewValidationError("field", "message", 1001)
+	err2 := NewValidationError("other", "other message", 1001)
+	err3 := NewValidationError("field", "message", 1002)
+	err4 := NewValidationError("field", "message", 0) // zero code
+
+	// Same code should match
+	if !err1.Is(err2) {
+		t.Error("Errors with same code should match")
+	}
+
+	// Different code should not match
+	if err1.Is(err3) {
+		t.Error("Errors with different codes should not match")
+	}
+
+	// Zero code should not match anything
+	if err4.Is(err1) {
+		t.Error("Error with zero code should not match")
+	}
+
+	// Non-ValidationError should not match
+	if err1.Is(errors.New("standard error")) {
+		t.Error("ValidationError should not match standard error")
+	}
+}
+
+func TestValidationError_ToMap(t *testing.T) {
+	err := NewValidationError("email", "invalid format", 1001)
+	m := err.ToMap()
+
+	if m["type"] != "ValidationError" {
+		t.Errorf("Expected type ValidationError, got %v", m["type"])
+	}
+	if m["field"] != "email" {
+		t.Errorf("Expected field email, got %v", m["field"])
+	}
+	if m["message"] != "invalid format" {
+		t.Errorf("Expected message 'invalid format', got %v", m["message"])
+	}
+	if m["code"] != 1001 {
+		t.Errorf("Expected code 1001, got %v", m["code"])
+	}
+	if m["timestamp"] == nil {
+		t.Error("Expected timestamp to be set")
+	}
+}
+
+func TestValidationError_ToJSON(t *testing.T) {
+	err := NewValidationError("email", "invalid", 1001)
+	jsonBytes, jsonErr := err.ToJSON()
+
+	if jsonErr != nil {
+		t.Errorf("ToJSON failed: %v", jsonErr)
+	}
+
+	var parsed map[string]interface{}
+	if unmarshalErr := json.Unmarshal(jsonBytes, &parsed); unmarshalErr != nil {
+		t.Errorf("Failed to parse JSON: %v", unmarshalErr)
+	}
+}
+
+func TestDatabaseError_Unwrap(t *testing.T) {
+	cause := errors.New("connection failed")
+	err := NewDatabaseError("SELECT", "users", cause)
+
+	if err.Unwrap() != cause {
+		t.Error("Unwrap should return the cause")
+	}
+}
+
+func TestDatabaseError_Is(t *testing.T) {
+	err1 := NewDatabaseError("SELECT", "users", nil)
+	err2 := NewDatabaseError("SELECT", "users", errors.New("different cause"))
+	err3 := NewDatabaseError("INSERT", "users", nil)
+	err4 := NewDatabaseError("SELECT", "orders", nil)
+
+	// Same operation and table should match
+	if !err1.Is(err2) {
+		t.Error("Errors with same operation and table should match")
+	}
+
+	// Different operation should not match
+	if err1.Is(err3) {
+		t.Error("Errors with different operations should not match")
+	}
+
+	// Different table should not match
+	if err1.Is(err4) {
+		t.Error("Errors with different tables should not match")
+	}
+
+	// Non-DatabaseError should not match
+	if err1.Is(errors.New("standard error")) {
+		t.Error("DatabaseError should not match standard error")
+	}
+}
+
+func TestDatabaseError_ToMap(t *testing.T) {
+	cause := errors.New("connection failed")
+	err := NewDatabaseError("SELECT", "users", cause)
+	m := err.ToMap()
+
+	if m["type"] != "DatabaseError" {
+		t.Errorf("Expected type DatabaseError, got %v", m["type"])
+	}
+	if m["operation"] != "SELECT" {
+		t.Errorf("Expected operation SELECT, got %v", m["operation"])
+	}
+	if m["table"] != "users" {
+		t.Errorf("Expected table users, got %v", m["table"])
+	}
+	if m["cause"] != "connection failed" {
+		t.Errorf("Expected cause 'connection failed', got %v", m["cause"])
+	}
+}
+
+func TestDatabaseError_ToJSON(t *testing.T) {
+	err := NewDatabaseError("SELECT", "users", errors.New("cause"))
+	jsonBytes, jsonErr := err.ToJSON()
+
+	if jsonErr != nil {
+		t.Errorf("ToJSON failed: %v", jsonErr)
+	}
+
+	var parsed map[string]interface{}
+	if unmarshalErr := json.Unmarshal(jsonBytes, &parsed); unmarshalErr != nil {
+		t.Errorf("Failed to parse JSON: %v", unmarshalErr)
+	}
+}
+
+func TestNetworkError_Unwrap(t *testing.T) {
+	err := NewNetworkError("http://example.com", 404)
+	if err.Unwrap() != nil {
+		t.Error("NetworkError.Unwrap() should always return nil")
+	}
+}
+
+func TestNetworkError_Is(t *testing.T) {
+	err1 := NewNetworkError("http://example.com", 404)
+	_ = err1 // NetworkError doesn't have Is matching with other NetworkErrors
+
+	err3 := NewNetworkTimeoutError("http://example.com")
+	err4 := NewNetworkTimeoutError("http://other.com")
+
+	// Same URL and timeout status should match
+	if !err3.Is(NewNetworkTimeoutError("http://example.com")) {
+		t.Error("Timeout errors with same URL should match")
+	}
+
+	// Different URL should not match
+	if err3.Is(err4) {
+		t.Error("Timeout errors with different URLs should not match")
+	}
+
+	// Non-NetworkError should not match
+	if err1.Is(errors.New("standard error")) {
+		t.Error("NetworkError should not match standard error")
+	}
+}
+
+func TestNetworkError_ToMap(t *testing.T) {
+	err := NewNetworkError("http://example.com", 404)
+	m := err.ToMap()
+
+	if m["type"] != "NetworkError" {
+		t.Errorf("Expected type NetworkError, got %v", m["type"])
+	}
+	if m["url"] != "http://example.com" {
+		t.Errorf("Expected url, got %v", m["url"])
+	}
+	if m["statusCode"] != 404 {
+		t.Errorf("Expected statusCode 404, got %v", m["statusCode"])
+	}
+	if m["timeout"] != false {
+		t.Errorf("Expected timeout false, got %v", m["timeout"])
+	}
+}
+
+func TestNetworkError_ToJSON(t *testing.T) {
+	err := NewNetworkError("http://example.com", 404)
+	jsonBytes, jsonErr := err.ToJSON()
+
+	if jsonErr != nil {
+		t.Errorf("ToJSON failed: %v", jsonErr)
+	}
+
+	var parsed map[string]interface{}
+	if unmarshalErr := json.Unmarshal(jsonBytes, &parsed); unmarshalErr != nil {
+		t.Errorf("Failed to parse JSON: %v", unmarshalErr)
+	}
+}
+
+func TestNetworkTimeoutError_ToMap(t *testing.T) {
+	err := NewNetworkTimeoutError("http://example.com")
+	m := err.ToMap()
+
+	if m["timeout"] != true {
+		t.Errorf("Expected timeout true, got %v", m["timeout"])
+	}
+}
+
+func TestBusinessLogicError_Unwrap(t *testing.T) {
+	err := NewBusinessLogicError("rule", "details")
+	if err.Unwrap() != nil {
+		t.Error("BusinessLogicError.Unwrap() should always return nil")
+	}
+}
+
+func TestBusinessLogicError_Is(t *testing.T) {
+	err1 := NewBusinessLogicError("rule1", "details1")
+	err2 := NewBusinessLogicError("rule1", "details2")
+	err3 := NewBusinessLogicError("rule2", "details1")
+
+	// Same rule should match
+	if !err1.Is(err2) {
+		t.Error("Errors with same rule should match")
+	}
+
+	// Different rule should not match
+	if err1.Is(err3) {
+		t.Error("Errors with different rules should not match")
+	}
+
+	// Non-BusinessLogicError should not match
+	if err1.Is(errors.New("standard error")) {
+		t.Error("BusinessLogicError should not match standard error")
+	}
+}
+
+func TestBusinessLogicError_ToMap(t *testing.T) {
+	err := NewBusinessLogicError("rule1", "violation details")
+	m := err.ToMap()
+
+	if m["type"] != "BusinessLogicError" {
+		t.Errorf("Expected type BusinessLogicError, got %v", m["type"])
+	}
+	if m["rule"] != "rule1" {
+		t.Errorf("Expected rule rule1, got %v", m["rule"])
+	}
+	if m["details"] != "violation details" {
+		t.Errorf("Expected details, got %v", m["details"])
+	}
+}
+
+func TestBusinessLogicError_ToJSON(t *testing.T) {
+	err := NewBusinessLogicError("rule", "details")
+	jsonBytes, jsonErr := err.ToJSON()
+
+	if jsonErr != nil {
+		t.Errorf("ToJSON failed: %v", jsonErr)
+	}
+
+	var parsed map[string]interface{}
+	if unmarshalErr := json.Unmarshal(jsonBytes, &parsed); unmarshalErr != nil {
+		t.Errorf("Failed to parse JSON: %v", unmarshalErr)
+	}
+}
+
+func TestConfigError_Unwrap(t *testing.T) {
+	err := NewConfigError("key", "value", "reason")
+	if err.Unwrap() != nil {
+		t.Error("ConfigError.Unwrap() should always return nil")
+	}
+}
+
+func TestConfigError_Is(t *testing.T) {
+	err1 := NewConfigError("key1", "value1", "reason1")
+	err2 := NewConfigError("key1", "value2", "reason2")
+	err3 := NewConfigError("key2", "value1", "reason1")
+
+	// Same key should match
+	if !err1.Is(err2) {
+		t.Error("Errors with same key should match")
+	}
+
+	// Different key should not match
+	if err1.Is(err3) {
+		t.Error("Errors with different keys should not match")
+	}
+
+	// Non-ConfigError should not match
+	if err1.Is(errors.New("standard error")) {
+		t.Error("ConfigError should not match standard error")
+	}
+}
+
+func TestConfigError_ToMap(t *testing.T) {
+	err := NewConfigError("apiKey", "secret123", "invalid format")
+	m := err.ToMap()
+
+	if m["type"] != "ConfigError" {
+		t.Errorf("Expected type ConfigError, got %v", m["type"])
+	}
+	if m["key"] != "apiKey" {
+		t.Errorf("Expected key apiKey, got %v", m["key"])
+	}
+	if m["value"] != "secret123" {
+		t.Errorf("Expected value, got %v", m["value"])
+	}
+	if m["reason"] != "invalid format" {
+		t.Errorf("Expected reason, got %v", m["reason"])
+	}
+}
+
+func TestConfigError_ToJSON(t *testing.T) {
+	err := NewConfigError("key", "value", "reason")
+	jsonBytes, jsonErr := err.ToJSON()
+
+	if jsonErr != nil {
+		t.Errorf("ToJSON failed: %v", jsonErr)
+	}
+
+	var parsed map[string]interface{}
+	if unmarshalErr := json.Unmarshal(jsonBytes, &parsed); unmarshalErr != nil {
+		t.Errorf("Failed to parse JSON: %v", unmarshalErr)
+	}
+}
+
+func TestAuthError_Unwrap(t *testing.T) {
+	err := NewAuthError("login", "user", "reason")
+	if err.Unwrap() != nil {
+		t.Error("AuthError.Unwrap() should always return nil")
+	}
+}
+
+func TestAuthError_Is(t *testing.T) {
+	err1 := NewAuthError("login", "user1", "reason1")
+	err2 := NewAuthError("login", "user2", "reason2")
+	err3 := NewAuthError("logout", "user1", "reason1")
+
+	// Same operation should match
+	if !err1.Is(err2) {
+		t.Error("Errors with same operation should match")
+	}
+
+	// Different operation should not match
+	if err1.Is(err3) {
+		t.Error("Errors with different operations should not match")
+	}
+
+	// Non-AuthError should not match
+	if err1.Is(errors.New("standard error")) {
+		t.Error("AuthError should not match standard error")
+	}
+}
+
+func TestAuthError_ToMap(t *testing.T) {
+	err := NewAuthError("token_verify", "john@example.com", "expired token")
+	m := err.ToMap()
+
+	if m["type"] != "AuthError" {
+		t.Errorf("Expected type AuthError, got %v", m["type"])
+	}
+	if m["operation"] != "token_verify" {
+		t.Errorf("Expected operation token_verify, got %v", m["operation"])
+	}
+	if m["user"] != "john@example.com" {
+		t.Errorf("Expected user, got %v", m["user"])
+	}
+	if m["reason"] != "expired token" {
+		t.Errorf("Expected reason, got %v", m["reason"])
+	}
+}
+
+func TestAuthError_ToJSON(t *testing.T) {
+	err := NewAuthError("login", "user", "reason")
+	jsonBytes, jsonErr := err.ToJSON()
+
+	if jsonErr != nil {
+		t.Errorf("ToJSON failed: %v", jsonErr)
+	}
+
+	var parsed map[string]interface{}
+	if unmarshalErr := json.Unmarshal(jsonBytes, &parsed); unmarshalErr != nil {
+		t.Errorf("Failed to parse JSON: %v", unmarshalErr)
+	}
+}
+
+func TestRateLimitError_Unwrap(t *testing.T) {
+	err := NewRateLimitError("api", 100, 150, 60)
+	if err.Unwrap() != nil {
+		t.Error("RateLimitError.Unwrap() should always return nil")
+	}
+}
+
+func TestRateLimitError_Is(t *testing.T) {
+	err1 := NewRateLimitError("api", 100, 150, 60)
+	err2 := NewRateLimitError("api", 200, 250, 30)
+	err3 := NewRateLimitError("other", 100, 150, 60)
+
+	// Same resource should match
+	if !err1.Is(err2) {
+		t.Error("Errors with same resource should match")
+	}
+
+	// Different resource should not match
+	if err1.Is(err3) {
+		t.Error("Errors with different resources should not match")
+	}
+
+	// Non-RateLimitError should not match
+	if err1.Is(errors.New("standard error")) {
+		t.Error("RateLimitError should not match standard error")
+	}
+}
+
+func TestRateLimitError_ToMap(t *testing.T) {
+	err := NewRateLimitError("/api/v1/users", 100, 150, 60)
+	m := err.ToMap()
+
+	if m["type"] != "RateLimitError" {
+		t.Errorf("Expected type RateLimitError, got %v", m["type"])
+	}
+	if m["resource"] != "/api/v1/users" {
+		t.Errorf("Expected resource, got %v", m["resource"])
+	}
+	if m["limit"] != 100 {
+		t.Errorf("Expected limit 100, got %v", m["limit"])
+	}
+	if m["current"] != 150 {
+		t.Errorf("Expected current 150, got %v", m["current"])
+	}
+	if m["retryAfter"] != 60 {
+		t.Errorf("Expected retryAfter 60, got %v", m["retryAfter"])
+	}
+}
+
+func TestRateLimitError_ToJSON(t *testing.T) {
+	err := NewRateLimitError("api", 100, 150, 60)
+	jsonBytes, jsonErr := err.ToJSON()
+
+	if jsonErr != nil {
+		t.Errorf("ToJSON failed: %v", jsonErr)
+	}
+
+	var parsed map[string]interface{}
+	if unmarshalErr := json.Unmarshal(jsonBytes, &parsed); unmarshalErr != nil {
+		t.Errorf("Failed to parse JSON: %v", unmarshalErr)
+	}
+}
