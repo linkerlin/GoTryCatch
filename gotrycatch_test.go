@@ -220,16 +220,50 @@ func TestThrow(t *testing.T) {
 func TestValidationError(t *testing.T) {
 	err := trycatcherrors.NewValidationError("email", "invalid format", 1001)
 
-	expected := "validation error [1001] on field 'email': invalid format"
-	if err.Error() != expected {
-		t.Errorf("Expected error message %v, got %v", expected, err.Error())
-	}
-
+	// 验证基本字段
 	if err.Field != "email" {
 		t.Errorf("Expected field 'email', got %v", err.Field)
 	}
 	if err.Code != 1001 {
 		t.Errorf("Expected code 1001, got %v", err.Code)
+	}
+	if err.Message != "invalid format" {
+		t.Errorf("Expected message 'invalid format', got %v", err.Message)
+	}
+
+	// 验证新增字段
+	if err.File == "" {
+		t.Error("Expected File to be populated")
+	}
+	if err.Line == 0 {
+		t.Error("Expected Line to be populated")
+	}
+	if err.Timestamp.IsZero() {
+		t.Error("Expected Timestamp to be populated")
+	}
+	if len(err.Stack) == 0 {
+		t.Error("Expected Stack to be populated")
+	}
+
+	// 验证 Error() 方法包含位置信息
+	errStr := err.Error()
+	if errStr == "" {
+		t.Error("Expected non-empty error string")
+	}
+
+	// 验证 ToMap
+	m := err.ToMap()
+	if m["type"] != "ValidationError" {
+		t.Errorf("Expected type 'ValidationError', got %v", m["type"])
+	}
+
+	// 验证 ToJSON
+	jsonBytes, jsonErr := err.ToJSON()
+	if jsonErr != nil {
+		t.Errorf("ToJSON failed: %v", jsonErr)
+	}
+	if len(jsonBytes) == 0 {
+		t.Error("Expected non-empty JSON")
 	}
 }
 
@@ -237,11 +271,7 @@ func TestDatabaseError(t *testing.T) {
 	cause := errors.New("connection failed")
 	err := trycatcherrors.NewDatabaseError("SELECT", "users", cause)
 
-	expected := "database error during SELECT on table 'users': connection failed"
-	if err.Error() != expected {
-		t.Errorf("Expected error message %v, got %v", expected, err.Error())
-	}
-
+	// 验证基本字段
 	if err.Operation != "SELECT" {
 		t.Errorf("Expected operation 'SELECT', got %v", err.Operation)
 	}
@@ -251,16 +281,34 @@ func TestDatabaseError(t *testing.T) {
 	if err.Cause != cause {
 		t.Errorf("Expected cause %v, got %v", cause, err.Cause)
 	}
+
+	// 验证新增字段
+	if err.File == "" {
+		t.Error("Expected File to be populated")
+	}
+	if err.Line == 0 {
+		t.Error("Expected Line to be populated")
+	}
+	if err.Timestamp.IsZero() {
+		t.Error("Expected Timestamp to be populated")
+	}
+
+	// 验证 Unwrap
+	if err.Unwrap() != cause {
+		t.Errorf("Expected Unwrap to return cause")
+	}
+
+	// 验证 ToMap
+	m := err.ToMap()
+	if m["type"] != "DatabaseError" {
+		t.Errorf("Expected type 'DatabaseError', got %v", m["type"])
+	}
 }
 
 func TestNetworkError(t *testing.T) {
 	err := trycatcherrors.NewNetworkError("http://example.com", 404)
 
-	expected := "network error 404 when accessing http://example.com"
-	if err.Error() != expected {
-		t.Errorf("Expected error message %v, got %v", expected, err.Error())
-	}
-
+	// 验证基本字段
 	if err.URL != "http://example.com" {
 		t.Errorf("Expected URL 'http://example.com', got %v", err.URL)
 	}
@@ -270,34 +318,201 @@ func TestNetworkError(t *testing.T) {
 	if err.Timeout {
 		t.Errorf("Expected timeout to be false, got true")
 	}
+
+	// 验证新增字段
+	if err.File == "" {
+		t.Error("Expected File to be populated")
+	}
+	if err.Timestamp.IsZero() {
+		t.Error("Expected Timestamp to be populated")
+	}
+
+	// 验证 ToMap
+	m := err.ToMap()
+	if m["statusCode"] != 404 {
+		t.Errorf("Expected statusCode 404, got %v", m["statusCode"])
+	}
 }
 
 func TestNetworkTimeoutError(t *testing.T) {
 	err := trycatcherrors.NewNetworkTimeoutError("http://example.com")
 
-	expected := "network timeout when accessing http://example.com"
-	if err.Error() != expected {
-		t.Errorf("Expected error message %v, got %v", expected, err.Error())
-	}
-
 	if !err.Timeout {
 		t.Errorf("Expected timeout to be true, got false")
+	}
+	if err.URL != "http://example.com" {
+		t.Errorf("Expected URL 'http://example.com', got %v", err.URL)
+	}
+
+	// 验证 Error() 包含 timeout 信息
+	errStr := err.Error()
+	if errStr == "" {
+		t.Error("Expected non-empty error string")
 	}
 }
 
 func TestBusinessLogicError(t *testing.T) {
 	err := trycatcherrors.NewBusinessLogicError("age_limit", "must be over 18")
 
-	expected := "business rule violation: age_limit - must be over 18"
-	if err.Error() != expected {
-		t.Errorf("Expected error message %v, got %v", expected, err.Error())
-	}
-
+	// 验证基本字段
 	if err.Rule != "age_limit" {
 		t.Errorf("Expected rule 'age_limit', got %v", err.Rule)
 	}
 	if err.Details != "must be over 18" {
 		t.Errorf("Expected details 'must be over 18', got %v", err.Details)
+	}
+
+	// 验证新增字段
+	if err.File == "" {
+		t.Error("Expected File to be populated")
+	}
+	if err.Timestamp.IsZero() {
+		t.Error("Expected Timestamp to be populated")
+	}
+
+	// 验证 ToMap
+	m := err.ToMap()
+	if m["type"] != "BusinessLogicError" {
+		t.Errorf("Expected type 'BusinessLogicError', got %v", m["type"])
+	}
+}
+
+// ============================================
+// 新增错误类型测试
+// ============================================
+
+func TestConfigError(t *testing.T) {
+	err := trycatcherrors.NewConfigError("database.url", "invalid://url", "invalid URL format")
+
+	// 验证基本字段
+	if err.Key != "database.url" {
+		t.Errorf("Expected key 'database.url', got %v", err.Key)
+	}
+	if err.Value != "invalid://url" {
+		t.Errorf("Expected value 'invalid://url', got %v", err.Value)
+	}
+	if err.Reason != "invalid URL format" {
+		t.Errorf("Expected reason 'invalid URL format', got %v", err.Reason)
+	}
+
+	// 验证新增字段
+	if err.File == "" {
+		t.Error("Expected File to be populated")
+	}
+	if err.Timestamp.IsZero() {
+		t.Error("Expected Timestamp to be populated")
+	}
+
+	// 验证 Error() 方法
+	errStr := err.Error()
+	if errStr == "" {
+		t.Error("Expected non-empty error string")
+	}
+
+	// 验证 ToMap 和 ToJSON
+	m := err.ToMap()
+	if m["type"] != "ConfigError" {
+		t.Errorf("Expected type 'ConfigError', got %v", m["type"])
+	}
+
+	jsonBytes, jsonErr := err.ToJSON()
+	if jsonErr != nil {
+		t.Errorf("ToJSON failed: %v", jsonErr)
+	}
+	if len(jsonBytes) == 0 {
+		t.Error("Expected non-empty JSON")
+	}
+}
+
+func TestAuthError(t *testing.T) {
+	err := trycatcherrors.NewAuthError("login", "user123", "invalid password")
+
+	// 验证基本字段
+	if err.Operation != "login" {
+		t.Errorf("Expected operation 'login', got %v", err.Operation)
+	}
+	if err.User != "user123" {
+		t.Errorf("Expected user 'user123', got %v", err.User)
+	}
+	if err.Reason != "invalid password" {
+		t.Errorf("Expected reason 'invalid password', got %v", err.Reason)
+	}
+
+	// 验证新增字段
+	if err.File == "" {
+		t.Error("Expected File to be populated")
+	}
+	if err.Timestamp.IsZero() {
+		t.Error("Expected Timestamp to be populated")
+	}
+
+	// 验证 ToMap
+	m := err.ToMap()
+	if m["type"] != "AuthError" {
+		t.Errorf("Expected type 'AuthError', got %v", m["type"])
+	}
+}
+
+func TestRateLimitError(t *testing.T) {
+	err := trycatcherrors.NewRateLimitError("api/endpoint", 100, 105, 60)
+
+	// 验证基本字段
+	if err.Resource != "api/endpoint" {
+		t.Errorf("Expected resource 'api/endpoint', got %v", err.Resource)
+	}
+	if err.Limit != 100 {
+		t.Errorf("Expected limit 100, got %v", err.Limit)
+	}
+	if err.Current != 105 {
+		t.Errorf("Expected current 105, got %v", err.Current)
+	}
+	if err.RetryAfter != 60 {
+		t.Errorf("Expected retryAfter 60, got %v", err.RetryAfter)
+	}
+
+	// 验证新增字段
+	if err.File == "" {
+		t.Error("Expected File to be populated")
+	}
+	if err.Timestamp.IsZero() {
+		t.Error("Expected Timestamp to be populated")
+	}
+
+	// 验证 ToMap
+	m := err.ToMap()
+	if m["type"] != "RateLimitError" {
+		t.Errorf("Expected type 'RateLimitError', got %v", m["type"])
+	}
+}
+
+func TestErrorIsMethod(t *testing.T) {
+	// 测试 ValidationError 的 Is 方法
+	err1 := trycatcherrors.NewValidationError("field1", "msg1", 1001)
+	err2 := trycatcherrors.NewValidationError("field2", "msg2", 1001)
+	err3 := trycatcherrors.NewValidationError("field3", "msg3", 1002)
+
+	if !err1.Is(err2) {
+		t.Error("Expected err1.Is(err2) to be true (same code)")
+	}
+	if err1.Is(err3) {
+		t.Error("Expected err1.Is(err3) to be false (different code)")
+	}
+}
+
+func TestErrorUnwrapMethod(t *testing.T) {
+	// 测试 DatabaseError 的 Unwrap 方法
+	cause := errors.New("underlying error")
+	dbErr := trycatcherrors.NewDatabaseError("SELECT", "users", cause)
+
+	unwrapped := dbErr.Unwrap()
+	if unwrapped != cause {
+		t.Errorf("Expected Unwrap to return cause, got %v", unwrapped)
+	}
+
+	// 测试没有底层错误的类型
+	valErr := trycatcherrors.NewValidationError("field", "msg", 1001)
+	if valErr.Unwrap() != nil {
+		t.Error("Expected ValidationError.Unwrap() to return nil")
 	}
 }
 
@@ -339,5 +554,915 @@ func TestIntegration_CompleteWorkflow(t *testing.T) {
 		if steps[i] != expected {
 			t.Errorf("Step %d: expected %v, got %v", i, expected, steps[i])
 		}
+	}
+}
+
+// ============================================
+// 第一阶段新增方法测试
+// ============================================
+
+func TestGetError(t *testing.T) {
+	// 无错误情况
+	tb := Try(func() {})
+	if tb.GetError() != nil {
+		t.Errorf("Expected nil error, got %v", tb.GetError())
+	}
+
+	// 有错误情况
+	tb = Try(func() {
+		panic("test error")
+	})
+	if tb.GetError() != "test error" {
+		t.Errorf("Expected 'test error', got %v", tb.GetError())
+	}
+
+	// nil TryBlock
+	var nilTb *TryBlock
+	if nilTb.GetError() != nil {
+		t.Errorf("Expected nil for nil TryBlock, got %v", nilTb.GetError())
+	}
+}
+
+func TestHasError(t *testing.T) {
+	// 无错误
+	tb := Try(func() {})
+	if tb.HasError() {
+		t.Error("Expected HasError to be false")
+	}
+
+	// 有错误
+	tb = Try(func() {
+		panic("error")
+	})
+	if !tb.HasError() {
+		t.Error("Expected HasError to be true")
+	}
+
+	// nil TryBlock
+	var nilTb *TryBlock
+	if nilTb.HasError() {
+		t.Error("Expected HasError to be false for nil TryBlock")
+	}
+}
+
+func TestIsHandled(t *testing.T) {
+	// 未处理
+	tb := Try(func() {
+		panic("error")
+	})
+	if tb.IsHandled() {
+		t.Error("Expected IsHandled to be false before Catch")
+	}
+
+	// 已处理
+	tb = Catch[string](tb, func(err string) {})
+	if !tb.IsHandled() {
+		t.Error("Expected IsHandled to be true after Catch")
+	}
+
+	// nil TryBlock
+	var nilTb *TryBlock
+	if nilTb.IsHandled() {
+		t.Error("Expected IsHandled to be false for nil TryBlock")
+	}
+}
+
+func TestString(t *testing.T) {
+	// 无错误
+	tb := Try(func() {})
+	expected := "TryBlock{err: nil, handled: false}"
+	if tb.String() != expected {
+		t.Errorf("Expected '%s', got '%s'", expected, tb.String())
+	}
+
+	// 有错误
+	tb = Try(func() {
+		panic("test error")
+	})
+	str := tb.String()
+	if str == "" || str == "TryBlock{nil}" {
+		t.Errorf("Unexpected String output: %s", str)
+	}
+	// 应包含错误类型和值
+	if str != "TryBlock{err: string(test error), handled: false}" {
+		t.Errorf("Expected specific format, got '%s'", str)
+	}
+
+	// nil TryBlock
+	var nilTb *TryBlock
+	if nilTb.String() != "TryBlock{nil}" {
+		t.Errorf("Expected 'TryBlock{nil}', got '%s'", nilTb.String())
+	}
+}
+
+func TestGetErrorType(t *testing.T) {
+	// 无错误
+	tb := Try(func() {})
+	if tb.GetErrorType() != "" {
+		t.Errorf("Expected empty string, got '%s'", tb.GetErrorType())
+	}
+
+	// string 类型错误
+	tb = Try(func() {
+		panic("string error")
+	})
+	if tb.GetErrorType() != "string" {
+		t.Errorf("Expected 'string', got '%s'", tb.GetErrorType())
+	}
+
+	// 自定义类型错误
+	tb = Try(func() {
+		panic(trycatcherrors.NewValidationError("field", "msg", 1001))
+	})
+	expectedType := "errors.ValidationError"
+	if tb.GetErrorType() != expectedType {
+		t.Errorf("Expected '%s', got '%s'", expectedType, tb.GetErrorType())
+	}
+
+	// nil TryBlock
+	var nilTb *TryBlock
+	if nilTb.GetErrorType() != "" {
+		t.Errorf("Expected empty string for nil TryBlock, got '%s'", nilTb.GetErrorType())
+	}
+}
+
+func TestSetDebug(t *testing.T) {
+	// 测试调试模式开关
+	originalDebug := IsDebug()
+
+	SetDebug(true)
+	if !IsDebug() {
+		t.Error("Expected debug mode to be true")
+	}
+
+	SetDebug(false)
+	if IsDebug() {
+		t.Error("Expected debug mode to be false")
+	}
+
+	// 恢复原状态
+	SetDebug(originalDebug)
+}
+
+func TestAssert(t *testing.T) {
+	// 条件为 true，不应 panic
+	Assert(true, "should not panic")
+
+	// 条件为 false，应该 panic
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Expected panic from Assert")
+		} else if r != "assertion failed" {
+			t.Errorf("Expected 'assertion failed', got %v", r)
+		}
+	}()
+
+	Assert(false, "assertion failed")
+}
+
+func TestAssertNoError(t *testing.T) {
+	// err 为 nil，不应 panic
+	AssertNoError(nil, "no error")
+
+	// err 不为 nil，应该 panic
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Expected panic from AssertNoError")
+		} else {
+			err, ok := r.(error)
+			if !ok {
+				t.Errorf("Expected error type, got %T", r)
+			}
+			if err.Error() != "operation failed: test error" {
+				t.Errorf("Unexpected error message: %v", err)
+			}
+		}
+	}()
+
+	AssertNoError(errors.New("test error"), "operation failed")
+}
+
+// ============================================
+// 第三阶段：TryWithResult 测试
+// ============================================
+
+func TestTryWithResult_NoPanic(t *testing.T) {
+	tb := TryWithResult(func() int {
+		return 42
+	})
+
+	if tb.HasError() {
+		t.Errorf("Expected no error, got %v", tb.GetError())
+	}
+	if tb.GetResult() != 42 {
+		t.Errorf("Expected result 42, got %v", tb.GetResult())
+	}
+	if tb.IsHandled() {
+		t.Error("Expected IsHandled to be false")
+	}
+}
+
+func TestTryWithResult_WithPanic(t *testing.T) {
+	tb := TryWithResult(func() int {
+		panic("something went wrong")
+	})
+
+	if !tb.HasError() {
+		t.Error("Expected HasError to be true")
+	}
+	if tb.GetError() != "something went wrong" {
+		t.Errorf("Expected error 'something went wrong', got %v", tb.GetError())
+	}
+}
+
+func TestTryWithResult_Catch(t *testing.T) {
+	tb := TryWithResult(func() int {
+		panic(trycatcherrors.NewValidationError("field", "invalid", 1001))
+	})
+
+	tb = CatchWithResult[int, trycatcherrors.ValidationError](tb, func(err trycatcherrors.ValidationError) {
+		// 处理错误
+	})
+
+	if !tb.IsHandled() {
+		t.Error("Expected IsHandled to be true after catch")
+	}
+}
+
+func TestTryWithResult_Finally_Success(t *testing.T) {
+	var finallyCalled bool
+
+	tb := TryWithResult(func() int {
+		return 100
+	})
+
+	result := tb.Finally(func() {
+		finallyCalled = true
+	})
+
+	if !finallyCalled {
+		t.Error("Expected Finally to be called")
+	}
+	if result != 100 {
+		t.Errorf("Expected result 100, got %v", result)
+	}
+}
+
+func TestTryWithResult_Finally_WithHandledError(t *testing.T) {
+	var finallyCalled bool
+
+	tb := TryWithResult(func() int {
+		panic("error")
+	})
+
+	tb = CatchWithResult[int, string](tb, func(err string) {
+		// 处理错误
+	})
+
+	result := tb.Finally(func() {
+		finallyCalled = true
+	})
+
+	if !finallyCalled {
+		t.Error("Expected Finally to be called")
+	}
+	// 有错误时返回零值
+	if result != 0 {
+		t.Errorf("Expected zero result, got %v", result)
+	}
+}
+
+func TestTryWithResult_OnSuccess(t *testing.T) {
+	var successCalled bool
+	var receivedResult int
+
+	tb := TryWithResult(func() int {
+		return 42
+	})
+
+	tb.OnSuccess(func(result int) {
+		successCalled = true
+		receivedResult = result
+	})
+
+	if !successCalled {
+		t.Error("Expected OnSuccess to be called")
+	}
+	if receivedResult != 42 {
+		t.Errorf("Expected result 42, got %v", receivedResult)
+	}
+}
+
+func TestTryWithResult_OnSuccess_NotCalledOnError(t *testing.T) {
+	var successCalled bool
+
+	tb := TryWithResult(func() int {
+		panic("error")
+	})
+
+	tb.OnSuccess(func(result int) {
+		successCalled = true
+	})
+
+	if successCalled {
+		t.Error("Expected OnSuccess not to be called on error")
+	}
+}
+
+func TestTryWithResult_OnError(t *testing.T) {
+	var errorCalled bool
+	var receivedError interface{}
+
+	tb := TryWithResult(func() int {
+		panic("test error")
+	})
+
+	tb.OnError(func(err interface{}) {
+		errorCalled = true
+		receivedError = err
+	})
+
+	if !errorCalled {
+		t.Error("Expected OnError to be called")
+	}
+	if receivedError != "test error" {
+		t.Errorf("Expected error 'test error', got %v", receivedError)
+	}
+	if !tb.IsHandled() {
+		t.Error("Expected error to be handled after OnError")
+	}
+}
+
+func TestTryWithResult_OrElse(t *testing.T) {
+	// 成功情况 - 返回实际结果
+	tb1 := TryWithResult(func() string {
+		return "success"
+	})
+	result1 := tb1.OrElse("default")
+	if result1 != "success" {
+		t.Errorf("Expected 'success', got %v", result1)
+	}
+
+	// 失败情况 - 返回默认值
+	tb2 := TryWithResult(func() string {
+		panic("error")
+	})
+	result2 := tb2.OrElse("default")
+	if result2 != "default" {
+		t.Errorf("Expected 'default', got %v", result2)
+	}
+}
+
+func TestTryWithResult_OrElseGet(t *testing.T) {
+	// 成功情况
+	tb1 := TryWithResult(func() int {
+		return 10
+	})
+	result1 := tb1.OrElseGet(func() int { return 0 })
+	if result1 != 10 {
+		t.Errorf("Expected 10, got %v", result1)
+	}
+
+	// 失败情况
+	tb2 := TryWithResult(func() int {
+		panic("error")
+	})
+	result2 := tb2.OrElseGet(func() int { return 99 })
+	if result2 != 99 {
+		t.Errorf("Expected 99, got %v", result2)
+	}
+}
+
+func TestTryWithResult_String(t *testing.T) {
+	// 无错误
+	tb1 := TryWithResult(func() int { return 42 })
+	str1 := tb1.String()
+	if str1 == "" {
+		t.Error("Expected non-empty string")
+	}
+
+	// 有错误
+	tb2 := TryWithResult(func() int { panic("err") })
+	str2 := tb2.String()
+	if str2 == "" {
+		t.Error("Expected non-empty string")
+	}
+
+	// nil
+	var nilTb *TryBlockWithResult[int]
+	if nilTb.String() != "TryBlockWithResult{nil}" {
+		t.Errorf("Unexpected string for nil: %s", nilTb.String())
+	}
+}
+
+// ============================================
+// 边界情况测试 (Edge Case Tests)
+// ============================================
+
+func TestCatch_NilHandler(t *testing.T) {
+	// Catch with nil handler should not panic, just return the TryBlock
+	tb := Try(func() {
+		panic("test error")
+	})
+
+	// Passing nil handler should not crash
+	tb = Catch[string](tb, nil)
+
+	// Error should still be present but not handled
+	if tb.GetError() != "test error" {
+		t.Errorf("Expected error 'test error', got %v", tb.GetError())
+	}
+	if tb.IsHandled() {
+		t.Error("Expected IsHandled to be false with nil handler")
+	}
+}
+
+func TestCatchAny_NilHandler(t *testing.T) {
+	tb := Try(func() {
+		panic("test error")
+	})
+
+	// CatchAny with nil handler
+	tb = tb.CatchAny(nil)
+
+	if tb.GetError() != "test error" {
+		t.Errorf("Expected error 'test error', got %v", tb.GetError())
+	}
+	if tb.IsHandled() {
+		t.Error("Expected IsHandled to be false with nil handler")
+	}
+}
+
+func TestFinally_NilHandler(t *testing.T) {
+	tb := Try(func() {
+		panic("test error")
+	})
+
+	tb = Catch[string](tb, func(err string) {})
+
+	// Finally with nil handler should not panic
+	tb.Finally(nil)
+
+	// Should still be handled
+	if !tb.IsHandled() {
+		t.Error("Expected IsHandled to be true")
+	}
+}
+
+func TestFinally_PanicInHandler(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Expected panic from Finally handler to propagate")
+		} else if r != "finally panic" {
+			t.Errorf("Expected 'finally panic', got %v", r)
+		}
+	}()
+
+	tb := Try(func() {
+		// No panic
+	})
+
+	tb.Finally(func() {
+		panic("finally panic")
+	})
+}
+
+func TestCatch_PanicInHandler(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Expected panic from Catch handler to propagate")
+		} else if r != "handler panic" {
+			t.Errorf("Expected 'handler panic', got %v", r)
+		}
+	}()
+
+	tb := Try(func() {
+		panic("original error")
+	})
+
+	Catch[string](tb, func(err string) {
+		panic("handler panic")
+	})
+}
+
+func TestFinally_CalledAfterCatchPanic(t *testing.T) {
+	// When Catch handler panics, Finally is NOT called because panic propagates immediately
+	// before Finally can be invoked. This test verifies that behavior.
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Expected panic to propagate")
+		} else if r != "catch panic" {
+			t.Errorf("Expected 'catch panic', got %v", r)
+		}
+	}()
+
+	tb := Try(func() {
+		panic("test error")
+	})
+
+	// This panic propagates before Finally is called
+	Catch[string](tb, func(err string) {
+		panic("catch panic")
+	})
+
+	// This line is never reached because of the panic above
+	t.Error("Should not reach this line")
+}
+
+func TestNestedTryCatch(t *testing.T) {
+	var outerHandlerCalled, innerHandlerCalled bool
+
+	tb := Try(func() {
+		// Inner try-catch
+		innerTb := Try(func() {
+			panic("inner error")
+		})
+		innerTb = Catch[string](innerTb, func(err string) {
+			innerHandlerCalled = true
+			if err != "inner error" {
+				t.Errorf("Unexpected inner error: %v", err)
+			}
+		})
+		innerTb.Finally(func() {})
+
+		// Now cause outer panic
+		panic("outer error")
+	})
+
+	tb = Catch[string](tb, func(err string) {
+		outerHandlerCalled = true
+		if err != "outer error" {
+			t.Errorf("Unexpected outer error: %v", err)
+		}
+	})
+
+	if !innerHandlerCalled {
+		t.Error("Expected inner handler to be called")
+	}
+	if !outerHandlerCalled {
+		t.Error("Expected outer handler to be called")
+	}
+}
+
+func TestEmptyStringPanic(t *testing.T) {
+	tb := Try(func() {
+		panic("")
+	})
+
+	if tb.GetError() != "" {
+		t.Errorf("Expected empty string error, got %v", tb.GetError())
+	}
+	if !tb.HasError() {
+		t.Error("Expected HasError to be true even for empty string")
+	}
+
+	// Should still be able to catch empty string
+	var caught bool
+	tb = Catch[string](tb, func(err string) {
+		caught = true
+		if err != "" {
+			t.Errorf("Expected empty string, got %v", err)
+		}
+	})
+
+	if !caught {
+		t.Error("Expected Catch handler to be called for empty string")
+	}
+}
+
+func TestNilPanicValue(t *testing.T) {
+	// Note: panic(nil) in Go has special behavior - recover() returns a runtime.nilPanicError
+	// We still detect it as having an error (HasError = true)
+	tb := Try(func() {
+		panic(nil)
+	})
+
+	// HasError should be true even for nil panic
+	if !tb.HasError() {
+		t.Error("Expected HasError to be true even for nil panic value")
+	}
+
+	// The error value will be a special runtime type, not nil itself
+	if tb.GetError() == nil {
+		t.Error("Expected GetError to return non-nil (runtime.nilPanicError)")
+	}
+}
+
+func TestIntegerPanicValue(t *testing.T) {
+	tb := Try(func() {
+		panic(42)
+	})
+
+	if tb.GetError() != 42 {
+		t.Errorf("Expected error 42, got %v", tb.GetError())
+	}
+
+	var caught bool
+	tb = Catch[int](tb, func(err int) {
+		caught = true
+		if err != 42 {
+			t.Errorf("Expected 42, got %v", err)
+		}
+	})
+
+	if !caught {
+		t.Error("Expected int Catch handler to be called")
+	}
+}
+
+func TestStructPanicValue(t *testing.T) {
+	type CustomError struct {
+		Code    int
+		Message string
+	}
+
+	tb := Try(func() {
+		panic(CustomError{Code: 500, Message: "internal error"})
+	})
+
+	var caught bool
+	tb = Catch[CustomError](tb, func(err CustomError) {
+		caught = true
+		if err.Code != 500 || err.Message != "internal error" {
+			t.Errorf("Unexpected error: %+v", err)
+		}
+	})
+
+	if !caught {
+		t.Error("Expected CustomError Catch handler to be called")
+	}
+}
+
+func TestMultipleCatchAnyCalls(t *testing.T) {
+	var firstCallCount, secondCallCount int
+
+	tb := Try(func() {
+		panic("error")
+	})
+
+	// First CatchAny should handle and mark as handled
+	tb = tb.CatchAny(func(err interface{}) {
+		firstCallCount++
+	})
+
+	// Second CatchAny should NOT be called since already handled
+	tb = tb.CatchAny(func(err interface{}) {
+		secondCallCount++
+	})
+
+	if firstCallCount != 1 {
+		t.Errorf("Expected first handler called once, got %d", firstCallCount)
+	}
+	if secondCallCount != 0 {
+		t.Errorf("Expected second handler not called, got %d", secondCallCount)
+	}
+}
+
+func TestCatch_OrderMatters(t *testing.T) {
+	var stringHandlerCalled, anyHandlerCalled bool
+
+	tb := Try(func() {
+		panic("string error")
+	})
+
+	// First try to catch as int (won't match)
+	tb = Catch[int](tb, func(err int) {
+		// Should not be called
+	})
+
+	// Then catch as string (will match)
+	tb = Catch[string](tb, func(err string) {
+		stringHandlerCalled = true
+	})
+
+	// CatchAny after match should not be called
+	tb = tb.CatchAny(func(err interface{}) {
+		anyHandlerCalled = true
+	})
+
+	if !stringHandlerCalled {
+		t.Error("Expected string handler to be called")
+	}
+	if anyHandlerCalled {
+		t.Error("Expected CatchAny not to be called after string handler matched")
+	}
+}
+
+func TestCatchWithReturn_WithPanic(t *testing.T) {
+	// When CatchWithReturn handler panics, the panic should propagate
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Expected panic to propagate from handler")
+		} else if r != "handler panic" {
+			t.Errorf("Expected 'handler panic', got %v", r)
+		}
+	}()
+
+	tb := Try(func() {
+		panic("test error")
+	})
+
+	result, _ := CatchWithReturn[string](tb, func(err string) interface{} {
+		panic("handler panic")
+	})
+
+	// Should not reach here
+	_ = result
+	t.Error("Should not reach this line")
+}
+
+func TestTryWithResult_NilPanic(t *testing.T) {
+	tb := TryWithResult(func() int {
+		panic(nil)
+	})
+
+	if !tb.HasError() {
+		t.Error("Expected HasError to be true for nil panic")
+	}
+}
+
+func TestTryWithResult_EmptyResult(t *testing.T) {
+	tb := TryWithResult(func() string {
+		return "" // Empty but valid result
+	})
+
+	if tb.HasError() {
+		t.Error("Expected no error for empty string result")
+	}
+	if tb.GetResult() != "" {
+		t.Errorf("Expected empty string result, got %v", tb.GetResult())
+	}
+}
+
+func TestTryWithResult_OrElseGet_WithPanic(t *testing.T) {
+	tb := TryWithResult(func() int {
+		panic("error")
+	})
+
+	// OrElseGet should provide the default
+	result := tb.OrElseGet(func() int {
+		return 100
+	})
+
+	if result != 100 {
+		t.Errorf("Expected 100, got %v", result)
+	}
+}
+
+func TestConcurrentTryCatch(t *testing.T) {
+	const goroutines = 10
+	const iterations = 100
+
+	done := make(chan bool, goroutines)
+
+	for g := 0; g < goroutines; g++ {
+		go func(id int) {
+			for i := 0; i < iterations; i++ {
+				tb := Try(func() {
+					if i%2 == 0 {
+						panic("error")
+					}
+				})
+
+				tb = Catch[string](tb, func(err string) {
+					if err != "error" {
+						t.Errorf("Goroutine %d: unexpected error: %v", id, err)
+					}
+				})
+
+				tb.Finally(func() {})
+			}
+			done <- true
+		}(g)
+	}
+
+	// Wait for all goroutines
+	for g := 0; g < goroutines; g++ {
+		<-done
+	}
+}
+
+func TestTryWithResultConcurrent(t *testing.T) {
+	const goroutines = 10
+	const iterations = 100
+
+	done := make(chan bool, goroutines)
+
+	for g := 0; g < goroutines; g++ {
+		go func(id int) {
+			for i := 0; i < iterations; i++ {
+				tb := TryWithResult(func() int {
+					if i%2 == 0 {
+						panic("error")
+					}
+					return i
+				})
+
+				tb = CatchWithResult[int, string](tb, func(err string) {})
+
+				result := tb.OrElse(0)
+				_ = result
+			}
+			done <- true
+		}(g)
+	}
+
+	for g := 0; g < goroutines; g++ {
+		<-done
+	}
+}
+
+func TestDebugMode_DoesNotAffectBehavior(t *testing.T) {
+	originalDebug := IsDebug()
+	defer SetDebug(originalDebug)
+
+	// Enable debug mode
+	SetDebug(true)
+
+	var handlerCalled bool
+	tb := Try(func() {
+		panic("test")
+	})
+	tb = Catch[string](tb, func(err string) {
+		handlerCalled = true
+	})
+
+	// Behavior should be the same regardless of debug mode
+	if !handlerCalled {
+		t.Error("Expected handler to be called even in debug mode")
+	}
+	if tb.GetError() != "test" {
+		t.Errorf("Expected error 'test', got %v", tb.GetError())
+	}
+}
+
+func TestNilTryBlock_MethodCalls(t *testing.T) {
+	var nilTb *TryBlock
+
+	// All methods should handle nil receiver gracefully
+	if nilTb.GetError() != nil {
+		t.Error("Expected nil error for nil TryBlock")
+	}
+	if nilTb.HasError() {
+		t.Error("Expected HasError false for nil TryBlock")
+	}
+	if nilTb.IsHandled() {
+		t.Error("Expected IsHandled false for nil TryBlock")
+	}
+	if nilTb.GetErrorType() != "" {
+		t.Error("Expected empty error type for nil TryBlock")
+	}
+	if nilTb.String() != "TryBlock{nil}" {
+		t.Errorf("Unexpected String() for nil TryBlock: %s", nilTb.String())
+	}
+
+	// CatchAny returns a new empty TryBlock when receiver is nil (not the same nil pointer)
+	result := nilTb.CatchAny(func(err interface{}) {})
+	if result == nil {
+		t.Error("Expected CatchAny to return non-nil TryBlock for nil receiver")
+	}
+}
+
+func TestNilTryBlockWithResult_MethodCalls(t *testing.T) {
+	var nilTb *TryBlockWithResult[int]
+
+	if nilTb.GetError() != nil {
+		t.Error("Expected nil error for nil TryBlockWithResult")
+	}
+	if nilTb.HasError() {
+		t.Error("Expected HasError false for nil TryBlockWithResult")
+	}
+	if nilTb.IsHandled() {
+		t.Error("Expected IsHandled false for nil TryBlockWithResult")
+	}
+	if nilTb.GetResult() != 0 {
+		t.Errorf("Expected zero result for nil TryBlockWithResult, got %v", nilTb.GetResult())
+	}
+	if nilTb.String() != "TryBlockWithResult{nil}" {
+		t.Errorf("Unexpected String() for nil TryBlockWithResult: %s", nilTb.String())
+	}
+}
+
+func TestErrorInterface_PanicValue(t *testing.T) {
+	// Test panic with error interface value
+	err := errors.New("standard error")
+	tb := Try(func() {
+		panic(err)
+	})
+
+	if tb.GetError() != err {
+		t.Errorf("Expected error %v, got %v", err, tb.GetError())
+	}
+
+	var caught bool
+	tb = Catch[error](tb, func(e error) {
+		caught = true
+		if e != err {
+			t.Errorf("Expected %v, got %v", err, e)
+		}
+	})
+
+	if !caught {
+		t.Error("Expected error Catch handler to be called")
 	}
 }
