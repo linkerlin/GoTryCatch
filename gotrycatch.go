@@ -29,7 +29,7 @@ import (
 )
 
 // Version is the current version of the gotrycatch library.
-const Version = "1.2.0"
+const Version = "1.3.0"
 
 // Global debug mode flag
 var debugMode = false

@@ -1850,7 +1850,7 @@ func TestVersion_Exists(t *testing.T) {
 	if Version == "" {
 		t.Error("Version should not be empty")
 	}
-	if Version != "1.2.0" {
+	if Version != "1.3.0" {
 		t.Logf("Version is %s", Version)
 	}
 }

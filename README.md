@@ -4,7 +4,7 @@
 
 # GoTryCatch
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/linkerlin/gotrycatch)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/linkerlin/gotrycatch)
 [![Go](https://img.shields.io/badge/go-%3E%3D1.18-green.svg)](https://golang.org)
 
 A type-safe exception handling library based on Go generics that brings try-catch-like capabilities to Go.
