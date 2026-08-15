@@ -219,7 +219,10 @@ func canonicalType(v interface{}) string {
 	if t == nil {
 		return fmt.Sprintf("%T", v)
 	}
-	return t.Name()
+	if name := t.Name(); name != "" {
+		return name
+	}
+	return t.String()
 }
 
 // Try executes the given function and captures any panic that occurs.

@@ -897,3 +897,15 @@ func TestRateLimitError_ToJSON(t *testing.T) {
 		t.Errorf("Failed to parse JSON: %v", unmarshalErr)
 	}
 }
+
+// ============================================
+// captureCaller defensive branches
+// ============================================
+
+func TestCaptureCaller_DefensiveBranches(t *testing.T) {
+	// 越界 skip：runtime.Caller 返回 ok=false → "unknown" 兜底
+	file, line, fn := captureCaller(100000)
+	if file != "unknown" || line != 0 || fn != "unknown" {
+		t.Errorf("Expected unknown/0/unknown for out-of-range skip, got %q:%d:%q", file, line, fn)
+	}
+}
