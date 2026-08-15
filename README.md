@@ -4,8 +4,8 @@
 
 # GoTryCatch
 
-[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/linkerlin/gotrycatch)
-[![Go](https://img.shields.io/badge/go-%3E%3D1.18-green.svg)](https://golang.org)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/linkerlin/gotrycatch)
+[![Go](https://img.shields.io/badge/go-%3E%3D1.21-green.svg)](https://golang.org)
 
 A type-safe exception handling library based on Go generics that brings try-catch-like capabilities to Go.
 
@@ -26,15 +26,64 @@ A type-safe exception handling library based on Go generics that brings try-catc
 
 ⚠️ **Chaining limitation**: Due to Go's limitation that methods cannot have generic type parameters, you cannot write `tb.Catch[ErrorType](handler)`. Use the functional form instead: `gotrycatch.Catch[ErrorType](tb, handler)`. `CatchAny` and `Finally` do support chaining.
 
+## Semantic Boundaries
+
+Read these before relying on this library in production:
+
+1. **A panic inside a Catch handler propagates immediately and skips any later `Finally` call**. The chain is plain function calls, not a deferred block. Keep handler bodies non-panicking, or wrap them in their own `Try`.
+2. **A panic inside `Finally` replaces the original error** — same as Go's native `defer`. If `Finally` must run fallible cleanup, guard it with its own recover.
+3. **`Try` does not catch panics from goroutines started inside `fn`**. `recover` only works within the same goroutine; an unhandled panic in a child goroutine still crashes the process.
+4. **`Catch[T]` is an exact type assertion**, not `errors.As`. `panic(&err)` will not match `Catch[Err]` (align value vs pointer), and errors wrapped with `fmt.Errorf("...: %w", err)` will not be unwrapped. Catch the wrapper type, or panic the specific type you intend to catch. Use `CatchAs`/`OnAs` for wrapping-aware matching.
+5. **Run semantics**: a panic inside a handler propagates (after `Cleanup` clauses have run, since they are deferred); a panic inside a `Cleanup` itself replaces whatever was propagating, same as Go's native `defer`. Child goroutine panics are never captured — `recover` is goroutine-local.
+
 ## Installation
 
 ```bash
 go get github.com/linkerlin/gotrycatch
 ```
 
-## Quick Start
+## The v2 Way: Run
 
-### Basic usage
+`Run` is the recommended entry point. It is one call, impossible to forget
+cleanup, and results flow through ordinary Go error handling:
+
+```go
+import (
+    "fmt"
+
+    "github.com/linkerlin/gotrycatch"
+    "github.com/linkerlin/gotrycatch/errtypes"
+)
+
+func loadUser(id string) error {
+    err := gotrycatch.Run(func() { queryUser(id) },
+        // errors.As semantics: matches through fmt.Errorf("%w", ...) wrappers
+        gotrycatch.OnAs(func(e errtypes.DatabaseError) {
+            retry(id)
+        }),
+        gotrycatch.On(func(e errtypes.RateLimitError) {
+            wait(e.RetryAfter)
+        }),
+        // always runs, LIFO, even if a handler panics
+        gotrycatch.Cleanup(func() { conn.Close() }),
+    )
+    if err != nil {
+        return fmt.Errorf("load user %s: %w", id, err)
+    }
+    return nil
+}
+```
+
+Why it is hard to misuse:
+
+- **Unhandled panics come back as `error`** — silently swallowing is structurally impossible. Error panics pass through unchanged (so `errors.Is/As` work end-to-end); other values are wrapped in `*PanicError`.
+- **Cleanup always runs** — declared inline, no forgotten `Finally`.
+- **Clauses are ordered values** — no method/function chaining rules to memorize.
+- **`Run1` covers return values**: `v, err := gotrycatch.Run1(fn, clauses...)`.
+
+## Quick Start (classic chain API)
+
+Prefer `Run` above; the classic API remains fully supported:
 
 ```go
 package main
@@ -42,16 +91,16 @@ package main
 import (
     "fmt"
     "github.com/linkerlin/gotrycatch"
-    "github.com/linkerlin/gotrycatch/errors"
+    "github.com/linkerlin/gotrycatch/errtypes"
 )
 
 func main() {
     tb := gotrycatch.Try(func() {
         // Code that may panic
-        gotrycatch.Throw(errors.NewValidationError("email", "invalid format", 1001))
+        gotrycatch.Throw(errtypes.NewValidationError("email", "invalid format", 1001))
     })
 
-    tb = gotrycatch.Catch[errors.ValidationError](tb, func(err errors.ValidationError) {
+    tb = gotrycatch.Catch[errtypes.ValidationError](tb, func(err errtypes.ValidationError) {
         fmt.Printf("Validation error: %s (field: %s, code: %d)\n", err.Message, err.Field, err.Code)
     })
 
@@ -201,9 +250,15 @@ err.Is(target)  // bool - Error matching
 
 | Function/Method | Signature | Description |
 |-----------------|----------|-------------|
+| `Run` | `func Run(fn func(), clauses ...Clause) error` | **v2** Idiomatic clause-based execution; returns unhandled panics as error |
+| `Run1` | `func Run1[T any](fn func() T, clauses ...Clause) (T, error)` | **v2** Run with a return value |
+| `On[E]` | `func On[E any](handler func(E)) Clause` | **v2** Clause: exact-type match (Catch semantics) |
+| `OnAs[E]` | `func OnAs[E error](handler func(E)) Clause` | **v2** Clause: errors.As match, penetrates `%w` wrapping |
+| `Any` | `func Any(handler func(interface{})) Clause` | **v2** Clause: fallback for any panic |
+| `Cleanup` | `func Cleanup(fn func()) Clause` | **v2** Clause: always runs, LIFO, even if a handler panics |
 | `Try` | `func Try(fn func()) *TryBlock` | Execute function and capture any panic |
-| `Catch[T]` | `func Catch[T any](tb *TryBlock, handler func(T)) *TryBlock` | Handle panics of type T |
-| `CatchWithReturn[T]` | `func CatchWithReturn[T any](tb *TryBlock, handler func(T) interface{}) (interface{}, *TryBlock)` | Handle and return value |
+| `Catch[T]` | `func Catch[T any](tb *TryBlock, handler func(T)) *TryBlock` | Handle panics of exact type T |
+| `CatchAs[E]` | `func CatchAs[E error](tb *TryBlock, handler func(E)) *TryBlock` | **v2** Handle via errors.As (penetrates wrapping, E or *E) |
 | `CatchAny` | `func (tb *TryBlock) CatchAny(handler func(interface{})) *TryBlock` | Handle any unhandled panic |
 | `Finally` | `func (tb *TryBlock) Finally(fn func())` | Execute cleanup code |
 
@@ -213,7 +268,9 @@ err.Is(target)  // bool - Error matching
 |--------|-------------|-------------|
 | `HasError()` | `bool` | Whether a panic was captured |
 | `GetError()` | `interface{}` | Get the panic value |
-| `GetErrorType()` | `string` | Get error type name (e.g., "errors.ValidationError") |
+| `Err()` | `error` | **v2** Panic bridged to error (errors.Is/As-ready; non-error panics become `*PanicError`) |
+| `GetErrorType()` | `string` | Get error type name (e.g., "errtypes.ValidationError") |
+| `CanonicalErrorType()` | `string` | **v2** Pointer-free short type name (e.g., "ValidationError") |
 | `IsHandled()` | `bool` | Whether error was handled |
 | `String()` | `string` | Friendly string representation |
 
@@ -251,14 +308,45 @@ err.Is(target)  // bool - Error matching
 
 ## Performance
 
-- Built on Go's panic/recover; cost occurs only when exceptions actually happen
-- Near-zero overhead on the normal execution path
-- Try-Catch blocks can be nested without significant impact
+Measured with `go test -bench .` (see `gotrycatch_bench_test.go`; i9-13900HX, indicative only):
+
+| Scenario | ns/op | allocs/op |
+|----------|-------|-----------|
+| Error return (idiomatic baseline) | ~0.2 | 0 |
+| Raw `recover`, no panic | ~2 | 0 |
+| `Run`, no panic | ~11 | **0** |
+| `Run1`, no panic | ~9 | **0** |
+| `Try`, no panic | ~63 | 1 |
+| `TryWithResult` + `OrElse`, no panic | ~66 | 1 |
+| `Run` + panic + `On` hit | ~200 | 0 |
+| Raw `recover`, panic path | ~157 | 0 |
+| `Try` + panic + `Catch` hit | ~469 | 1 |
+| `Run` unhandled panic → error | ~1385 | 2 |
+
+- `Run` allocates **nothing** on the happy path (no TryBlock is created) — cheaper than `Try`
+- The unhandled-panic path pays one `*PanicError` + stack capture (error path only)
+- Fine for application-level flows; use `Run` over `Try` in hot loops
 
 ## Compatibility
 
-- Requires Go 1.18+ (generics)
+- Requires Go 1.21+ (generics; `panic(nil)` detection semantics)
 - Fully compatible with the standard library
+
+### Migrating from v1.x
+
+1. **`gotrycatch/errors` → `gotrycatch/errtypes`** (renamed to avoid clashing with stdlib `errors`). The old import path keeps compiling — it is now a pure alias layer with identical behavior (types are aliases; constructors are direct bindings, so File/Line/Stack attribution is unchanged). `GetErrorType()` output changes accordingly: `errors.ValidationError` → `errtypes.ValidationError`.
+2. **`CatchWithReturn` removed** — replace with `TryWithResult` + `CatchWithResult`:
+
+```go
+// v1
+result, tb := gotrycatch.CatchWithReturn(tb, func(err string) interface{} { ... })
+
+// v2
+tb = gotrycatch.CatchWithResult[int, string](tb, func(err string) { ... })
+result := tb.OrElse(defaultValue)
+```
+
+3. Everything else is additive: `Try`/`Catch`/`CatchAny`/`Finally`/`TryWithResult` chains behave exactly as in v1.
 - Can coexist with existing error-handling code
 - Thread-safe for concurrent use
 
@@ -300,22 +388,20 @@ A: Unhandled errors are re-thrown after `Finally` executes. Always use `CatchAny
 
 ## Examples
 
-See the `examples/` directory for more:
+See the `cmd/demo` directory for more:
 
 - Basic usage
 - Handling multiple error types
-- Nested exception handling
+- Structured error output (ToMap/ToJSON)
 - TryWithResult patterns
-- Structured error logging
+- Error chains (Unwrap/Is)
+- A real-world multi-catch scenario
 
 ### Run examples
 
 ```bash
-# Quick demo
+# Demo (10 detailed demos)
 go run ./cmd/demo
-
-# Full examples
-go run ./examples
 
 # Run tests
 go test -v ./...
@@ -357,13 +443,63 @@ MIT License
 
 ⚠️ **链式调用限制**: 由于 Go 语言的限制，方法不能有泛型类型参数，因此不能直接写 `tb.Catch[ErrorType](handler)`。需要使用函数式调用：`gotrycatch.Catch[ErrorType](tb, handler)`。但是 `CatchAny` 和 `Finally` 方法支持链式调用。
 
+## 语义边界
+
+在生产环境依赖本库之前，请先阅读以下边界：
+
+1. **Catch handler 内部发生 panic 会立即向上传播，并跳过之后才调用的 `Finally`**。调用链是普通函数调用而非 defer 块。请保证 handler 本身不 panic，或为其单独包一层 `Try`。
+2. **`Finally` 内部的 panic 会覆盖原始错误**——与 Go 原生 `defer` 语义一致。若 `Finally` 中的清理可能失败，请自行 recover 保护。
+3. **`Try` 不捕获 `fn` 内启动的 goroutine 的 panic**。`recover` 只在同一 goroutine 内有效；子 goroutine 的未处理 panic 仍会崩溃整个进程。
+4. **`Catch[T]` 是精确类型断言，而非 `errors.As`**。`panic(&err)` 无法匹配 `Catch[Err]`（注意值与指针对齐）；用 `fmt.Errorf("...: %w", err)` 包装过的错误也不会被解包。请捕获包装类型，或直接 panic 你打算捕获的具体类型。需要穿透包装请用 `CatchAs`/`OnAs`。
+5. **Run 语义**：handler 内的 panic 会向外传播（但 `Cleanup` 子句已通过 defer 注册，仍会执行）；`Cleanup` 自身的 panic 会覆盖正在传播的错误——与 Go 原生 `defer` 一致。子 goroutine 的 panic 永远无法被捕获——`recover` 是 goroutine 局部的。
+
 ## 安装
 
 ```bash
 go get github.com/linkerlin/gotrycatch
 ```
 
-## 快速开始
+## v2 推荐用法：Run
+
+`Run` 是 v2 的推荐入口。一次调用、不可能忘记清理、结果直接进入 Go 惯用的 error 流：
+
+```go
+import (
+    "fmt"
+
+    "github.com/linkerlin/gotrycatch"
+    "github.com/linkerlin/gotrycatch/errtypes"
+)
+
+func loadUser(id string) error {
+    err := gotrycatch.Run(func() { queryUser(id) },
+        // errors.As 语义：可穿透 fmt.Errorf("%w", ...) 包装
+        gotrycatch.OnAs(func(e errtypes.DatabaseError) {
+            retry(id)
+        }),
+        gotrycatch.On(func(e errtypes.RateLimitError) {
+            wait(e.RetryAfter)
+        }),
+        // 总是执行、LIFO，handler panic 也不会跳过
+        gotrycatch.Cleanup(func() { conn.Close() }),
+    )
+    if err != nil {
+        return fmt.Errorf("load user %s: %w", id, err)
+    }
+    return nil
+}
+```
+
+为什么难以误用：
+
+- **未处理的 panic 以 `error` 返回**——在结构上不可能静默吞错。error 型 panic 原样直通（`errors.Is/As` 全链路可用）；其他值包装为 `*PanicError`。
+- **Cleanup 总是执行**——内联声明，不存在忘记 `Finally` 的问题。
+- **子句是有序的值**——无需记忆方法/函数混链规则。
+- **`Run1` 支持返回值**：`v, err := gotrycatch.Run1(fn, clauses...)`。
+
+## 快速开始（经典链式 API）
+
+推荐优先使用上面的 `Run`；经典 API 继续完整支持：
 
 ### 基本用法
 
@@ -373,16 +509,16 @@ package main
 import (
     "fmt"
     "github.com/linkerlin/gotrycatch"
-    "github.com/linkerlin/gotrycatch/errors"
+    "github.com/linkerlin/gotrycatch/errtypes"
 )
 
 func main() {
     tb := gotrycatch.Try(func() {
         // 可能会 panic 的代码
-        gotrycatch.Throw(errors.NewValidationError("email", "格式无效", 1001))
+        gotrycatch.Throw(errtypes.NewValidationError("email", "格式无效", 1001))
     })
 
-    tb = gotrycatch.Catch[errors.ValidationError](tb, func(err errors.ValidationError) {
+    tb = gotrycatch.Catch[errtypes.ValidationError](tb, func(err errtypes.ValidationError) {
         fmt.Printf("验证错误: %s (字段: %s, 代码: %d)\n", err.Message, err.Field, err.Code)
     })
 
@@ -533,8 +669,17 @@ err.Is(target)  // bool - 错误匹配
 | 函数/方法 | 签名 | 说明 |
 |-----------|------|------|
 | `Try` | `func Try(fn func()) *TryBlock` | 执行函数并捕获任何 panic |
-| `Catch[T]` | `func Catch[T any](tb *TryBlock, handler func(T)) *TryBlock` | 处理指定类型 T 的异常 |
-| `CatchWithReturn[T]` | `func CatchWithReturn[T any](tb *TryBlock, handler func(T) interface{}) (interface{}, *TryBlock)` | 处理并返回值 |
+| 函数/方法 | 签名 | 说明 |
+|-----------|------|------|
+| `Run` | `func Run(fn func(), clauses ...Clause) error` | **v2** 惯用法子句式执行；未处理 panic 以 error 返回 |
+| `Run1` | `func Run1[T any](fn func() T, clauses ...Clause) (T, error)` | **v2** 带返回值的 Run |
+| `On[E]` | `func On[E any](handler func(E)) Clause` | **v2** 子句：精确类型匹配（Catch 语义） |
+| `OnAs[E]` | `func OnAs[E error](handler func(E)) Clause` | **v2** 子句：errors.As 匹配，穿透 `%w` 包装 |
+| `Any` | `func Any(handler func(interface{})) Clause` | **v2** 子句：任意 panic 兜底 |
+| `Cleanup` | `func Cleanup(fn func()) Clause` | **v2** 子句：总是执行、LIFO、handler panic 也不跳过 |
+| `Try` | `func Try(fn func()) *TryBlock` | 执行函数并捕获 panic |
+| `Catch[T]` | `func Catch[T any](tb *TryBlock, handler func(T)) *TryBlock` | 处理精确类型 T 的异常 |
+| `CatchAs[E]` | `func CatchAs[E error](tb *TryBlock, handler func(E)) *TryBlock` | **v2** errors.As 匹配（穿透包装、E 或 *E） |
 | `CatchAny` | `func (tb *TryBlock) CatchAny(handler func(interface{})) *TryBlock` | 处理任何未处理的异常 |
 | `Finally` | `func (tb *TryBlock) Finally(fn func())` | 执行清理代码 |
 
@@ -544,7 +689,9 @@ err.Is(target)  // bool - 错误匹配
 |------|----------|------|
 | `HasError()` | `bool` | 是否捕获了错误 |
 | `GetError()` | `interface{}` | 获取错误值 |
-| `GetErrorType()` | `string` | 获取错误类型名（如 "errors.ValidationError"） |
+| `Err()` | `error` | **v2** panic 桥接为 error（支持 errors.Is/As；非 error panic 包装为 `*PanicError`） |
+| `GetErrorType()` | `string` | 获取错误类型名（如 "errtypes.ValidationError"） |
+| `CanonicalErrorType()` | `string` | **v2** 去指针短类型名（如 "ValidationError"） |
 | `IsHandled()` | `bool` | 错误是否已被处理 |
 | `String()` | `string` | 友好的字符串表示 |
 
@@ -582,14 +729,45 @@ err.Is(target)  // bool - 错误匹配
 
 ## 性能考虑
 
-- 异常处理基于 Go 的 panic/recover 机制，只在实际发生异常时才有性能开销
-- 正常执行路径的性能开销接近零
-- Try-Catch 块可以嵌套使用，不会显著影响性能
+使用 `go test -bench .` 实测（见 `gotrycatch_bench_test.go`；i9-13900HX，仅供参考）：
+
+| 场景 | ns/op | allocs/op |
+|------|-------|-----------|
+| error 返回值（Go 惯用基线） | ~0.2 | 0 |
+| 原生 `recover`，无 panic | ~2 | 0 |
+| `Run`，无 panic | ~11 | **0** |
+| `Run1`，无 panic | ~9 | **0** |
+| `Try`，无 panic | ~63 | 1 |
+| `TryWithResult` + `OrElse`，无 panic | ~66 | 1 |
+| `Run` + panic + `On` 命中 | ~200 | 0 |
+| 原生 `recover`，panic 路径 | ~157 | 0 |
+| `Try` + panic + `Catch` 命中 | ~469 | 1 |
+| `Run` 未处理 panic → error | ~1385 | 2 |
+
+- `Run` 快乐路径**零分配**（不创建 TryBlock）——比 `Try` 更便宜
+- 未处理 panic 路径支付一次 `*PanicError` + 堆栈捕获（仅错误路径）
+- 适合应用级流程；热循环优先用 `Run` 而非 `Try`
 
 ## 兼容性
 
-- 需要 Go 1.18+ （泛型支持）
+- 需要 Go 1.21+（泛型；`panic(nil)` 检测语义）
 - 与标准库完全兼容
+
+### 从 v1.x 迁移
+
+1. **`gotrycatch/errors` → `gotrycatch/errtypes`**（改名以避免与标准库 `errors` 冲突）。旧导入路径仍可编译——现在是纯别名层，行为完全一致（类型为别名；构造函数为直接绑定，File/Line/Stack 归因不变）。`GetErrorType()` 输出相应变化：`errors.ValidationError` → `errtypes.ValidationError`。
+2. **`CatchWithReturn` 已移除**——用 `TryWithResult` + `CatchWithResult` 替代：
+
+```go
+// v1
+result, tb := gotrycatch.CatchWithReturn(tb, func(err string) interface{} { ... })
+
+// v2
+tb = gotrycatch.CatchWithResult[int, string](tb, func(err string) { ... })
+result := tb.OrElse(defaultValue)
+```
+
+3. 其余全部是增量：`Try`/`Catch`/`CatchAny`/`Finally`/`TryWithResult` 链式行为与 v1 完全一致。
 - 可以与现有的错误处理代码共存
 - 支持并发安全使用
 
@@ -634,21 +812,19 @@ A: 未处理的错误会在 `Finally` 执行后重新抛出。如果不想让 pa
 
 ## 示例
 
-查看 `examples/` 目录获取更多详细示例，包括：
+查看 `cmd/demo` 目录获取详细示例，包括：
 - 基本用法演示
 - 多种异常类型处理
-- 嵌套异常处理
+- 结构化输出（ToMap/ToJSON）
 - TryWithResult 模式
-- 结构化错误日志
+- 错误链（Unwrap/Is）
+- 真实场景多 Catch 示例
 
 ### 运行示例
 
 ```bash
-# 快速演示
+# 演示程序（10个详细Demo）
 go run ./cmd/demo
-
-# 完整示例
-go run ./examples
 
 # 运行测试
 go test -v ./...

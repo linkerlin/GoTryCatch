@@ -1,36 +1,108 @@
 # GoTryCatch 使用示例
 
-## 快速开始
+## 快速开始（v2 推荐：Run）
 
 ```go
 package main
 
 import (
     "fmt"
+
     "github.com/linkerlin/gotrycatch"
-    "github.com/linkerlin/gotrycatch/errors"
+    "github.com/linkerlin/gotrycatch/errtypes"
 )
 
 func main() {
-    // 基本的 Try/Catch/Finally
-    tb := gotrycatch.Try(func() {
-        gotrycatch.Throw(errors.NewValidationError("email", "invalid format", 1001))
-    })
+    // 一次调用：fn + 处理子句；未处理的 panic 以 error 返回
+    err := gotrycatch.Run(func() {
+        gotrycatch.Throw(errtypes.NewValidationError("email", "invalid format", 1001))
+    },
+        gotrycatch.OnAs(func(e errtypes.ValidationError) {
+            fmt.Printf("Validation error: %s (field: %s, code: %d)\n", e.Message, e.Field, e.Code)
+        }),
+        gotrycatch.Cleanup(func() { fmt.Println("Cleanup done") }),
+    )
+    if err != nil {
+        fmt.Println("unhandled:", err)
+    }
+}
+```
 
-    tb = gotrycatch.Catch[errors.ValidationError](tb, func(err errors.ValidationError) {
-        fmt.Printf("Validation error: %s (field: %s, code: %d)\n", err.Message, err.Field, err.Code)
-    })
+`Run` 的三个保证：
+- 未处理的 panic 一定以 `error` 返回——不可能静默吞错
+- `Cleanup` 总是执行（LIFO），handler panic 也不会跳过
+- 子句按声明顺序匹配，第一个命中者处理
 
-    tb.Finally(func() {
-        fmt.Println("Cleanup completed")
-    })
+## 穿透包装：OnAs
+
+```go
+// 业务代码用 %w 包装（Go 惯用）
+err := fmt.Errorf("query failed: %w", errtypes.NewDatabaseError("SELECT", "users", cause))
+
+// OnAs 能穿透包装链命中底层类型（errors.As 语义）
+gotrycatch.Run(func() { throwIt() },
+    gotrycatch.OnAs(func(e errtypes.DatabaseError) { retry() }),
+)
+```
+
+值/指针形态各自匹配：`panic(NewDatabaseError(...))`（值）配 `OnAs(func(e DatabaseError))`；`panic(&dbErr)`（指针）配 `OnAs(func(e *DatabaseError))`。
+
+## Run1 - 带返回值
+
+```go
+v, err := gotrycatch.Run1(func() int {
+    return computeValue()
+},
+    gotrycatch.OnAs(func(e errtypes.RateLimitError) { wait(e.RetryAfter) }),
+)
+if err != nil {
+    // v 是零值
+}
+```
+
+## 经典链式 API（v1 兼容）
+
+```go
+// 基本 Try/Catch/Finally
+tb := gotrycatch.Try(func() {
+    gotrycatch.Throw(errtypes.NewValidationError("email", "invalid format", 1001))
+})
+
+tb = gotrycatch.Catch[errtypes.ValidationError](tb, func(err errtypes.ValidationError) {
+    fmt.Printf("Validation error: %s (field: %s, code: %d)\n", err.Message, err.Field, err.Code)
+})
+
+tb = gotrycatch.CatchAs[errtypes.DatabaseError](tb, func(err errtypes.DatabaseError) {
+    // errors.As 语义：穿透 %w 包装
+})
+
+tb = gotrycatch.CatchAny(tb, func(v interface{}) {
+    fmt.Println("Unexpected:", v)
+})
+
+tb.Finally(func() {
+    fmt.Println("Cleanup done")
+})
+```
+
+## panic 到 error 的桥接
+
+```go
+// 经典链式也可以桥回惯用 error 世界
+if err := gotrycatch.Try(func() { risky() }).Err(); err != nil {
+    return fmt.Errorf("risky failed: %w", err)
+}
+
+// errors.Is/As 直接可用（error 型 panic 原样直通；其他值包装为 *PanicError）
+var dbErr errtypes.DatabaseError
+if errors.As(gotrycatch.Try(func() { panic(innerErr) }).Err(), &dbErr) {
+    // ...
 }
 ```
 
 ## TryWithResult - 带返回值
 
 ```go
-// 执行带返回值的函数
 tb := gotrycatch.TryWithResult(func() int {
     return computeValue()
 })
@@ -40,207 +112,123 @@ tb.OnSuccess(func(result int) {
     fmt.Println("Result:", result)
 })
 
-// 错误回调
-tb.OnError(func(err interface{}) {
-    fmt.Println("Error:", err)
-})
+// 错误时取默认值
+result := gotrycatch.TryWithResult(func() int {
+    panic("boom")
+}).OrElse(0)
 
-// 获取结果，有错误时返回默认值
-result := tb.OrElse(0)
-
-// 或者延迟计算默认值
-result := tb.OrElseGet(func() int { return computeDefault() })
+result2 := gotrycatch.TryWithResult(func() int {
+    panic("boom")
+}).OrElseGet(func() int { return computeDefault() })
 ```
 
 ## 多种异常类型处理
 
 ```go
 tb := gotrycatch.Try(func() {
-    processUserData()
+    validateUser("", "test@example.com", 25)
+    accessDatabase("delete_all")
 })
 
-// 按特定性排序：具体类型在前
-tb = gotrycatch.Catch[errors.ValidationError](tb, func(err errors.ValidationError) {
-    fmt.Printf("Validation failed: %s\n", err.Message)
+tb = gotrycatch.Catch[errtypes.ValidationError](tb, func(err errtypes.ValidationError) {
+    fmt.Printf("Validation: %s\n", err.Message)
 })
 
-tb = gotrycatch.Catch[errors.DatabaseError](tb, func(err errors.DatabaseError) {
-    fmt.Printf("Database error: %s on table %s\n", err.Operation, err.Table)
+tb = gotrycatch.Catch[errtypes.DatabaseError](tb, func(err errtypes.DatabaseError) {
+    fmt.Printf("Database: %s on %s\n", err.Operation, err.Table)
 })
 
-tb = gotrycatch.Catch[errors.NetworkError](tb, func(err errors.NetworkError) {
-    if err.Timeout {
-        fmt.Printf("Network timeout: %s\n", err.URL)
-    } else {
-        fmt.Printf("Network error %d: %s\n", err.StatusCode, err.URL)
-    }
-})
-
-tb = gotrycatch.Catch[errors.BusinessLogicError](tb, func(err errors.BusinessLogicError) {
-    fmt.Printf("Business rule violation: %s - %s\n", err.Rule, err.Details)
-})
-
-tb = gotrycatch.Catch[errors.ConfigError](tb, func(err errors.ConfigError) {
-    fmt.Printf("Config error on '%s': %s\n", err.Key, err.Reason)
-})
-
-tb = gotrycatch.Catch[errors.AuthError](tb, func(err errors.AuthError) {
-    fmt.Printf("Auth error during %s for user '%s': %s\n", err.Operation, err.User, err.Reason)
-})
-
-tb = gotrycatch.Catch[errors.RateLimitError](tb, func(err errors.RateLimitError) {
-    fmt.Printf("Rate limit exceeded on '%s': %d/%d, retry after %ds\n", 
-        err.Resource, err.Current, err.Limit, err.RetryAfter)
-})
-
-// CatchAny 作为兜底
-tb = tb.CatchAny(func(err interface{}) {
-    fmt.Printf("Unknown error: %v\n", err)
-})
-
-// Finally 保证清理代码执行
-tb.Finally(func() {
-    fmt.Println("Processing done")
+tb = gotrycatch.CatchAny(tb, func(v interface{}) {
+    fmt.Printf("Unexpected: %v\n", v)
 })
 ```
 
 ## 状态查询
 
 ```go
-tb := gotrycatch.Try(func() {
-    riskyOperation()
-})
+tb := gotrycatch.Try(func() { panic("err") })
 
-// 查询状态
-if tb.HasError() {
-    fmt.Printf("Error type: %s\n", tb.GetErrorType())
-    fmt.Printf("Error value: %v\n", tb.GetError())
-}
-
-if !tb.IsHandled() {
-    // 根据错误类型决定处理方式
-    switch tb.GetErrorType() {
-    case "errors.ValidationError":
-        // 处理验证错误
-    case "errors.DatabaseError":
-        // 处理数据库错误
-    default:
-        tb = tb.CatchAny(func(err interface{}) {
-            logUnknownError(err)
-        })
-    }
-}
-
-// 友好的字符串表示
-fmt.Println(tb.String())
+tb.HasError()                // true - 是否有错误
+tb.GetError()                // "err" - 原始 panic 值
+tb.Err()                     // *gotrycatch.PanicError - 桥接为 error
+tb.GetErrorType()            // "string" - 类型名
+tb.CanonicalErrorType()      // "string" - 去指针短类型名（Agent 友好）
+tb.IsHandled()               // false - 是否已处理
+tb.String()                  // 友好字符串
 ```
 
 ## 调试模式
 
 ```go
-// 开启调试，输出类型匹配日志
-gotrycatch.SetDebug(true)
-
-tb := gotrycatch.Try(func() {
-    panic("string error")
-})
-
-tb = gotrycatch.Catch[errors.ValidationError](tb, func(err errors.ValidationError) {
-    fmt.Println("Caught validation error")
-})
-
-// 控制台输出:
-// [gotrycatch] Catch: type string does not match target type errors.ValidationError
-
-// 查询调试状态
-if gotrycatch.IsDebug() {
-    fmt.Println("Debug mode is on")
-}
+gotrycatch.SetDebug(true)  // 开启后输出类型匹配日志
+gotrycatch.IsDebug()       // 查询状态
 ```
 
 ## 结构化错误输出
 
 ```go
-tb := gotrycatch.Catch[errors.BusinessLogicError](tb, func(err errors.BusinessLogicError) {
-    // JSON 输出便于日志和 Agent 解析
-    jsonData, _ := err.ToJSON()
-    log.Printf("ERROR: %s", string(jsonData))
-    // 输出: {"type":"BusinessLogicError","rule":"inventory_check","details":"Out of stock","file":"main.go","line":42,"function":"processOrder","timestamp":"2024-01-15T10:30:00Z","stack":[...]}
-
-    // Map 输出
-    m := err.ToMap()
-    fmt.Printf("Rule: %s, Details: %s\n", m["rule"], m["details"])
-})
+err := errtypes.NewDatabaseError("SELECT", "users", cause)
+m, _ := err.ToMap()    // map[string]interface{}
+j, _ := err.ToJSON()   // {"type":"DatabaseError",...}
+err.Stack              // []string - 调用堆栈（含 File/Line/Function/Timestamp）
 ```
 
 ## 断言辅助函数
 
 ```go
-// Assert: 条件为 false 时抛出错误
-gotrycatch.Assert(value != "", errors.NewValidationError("value", "cannot be empty", 1001))
-
-// AssertNoError: err 不为 nil 时抛出包装错误
-result, err := someOperation()
-gotrycatch.AssertNoError(err, "operation failed")
+gotrycatch.Assert(condition, err)            // false 时抛出 err
+gotrycatch.AssertNoError(err, "operation")   // err 非 nil 时抛出包装错误
 ```
 
-## TryWithResult 完整示例
+## 内置错误类型（errtypes 包）
+
+| 类型 | 构造函数 |
+|------|----------|
+| `ValidationError` | `NewValidationError(field, message, code)` |
+| `DatabaseError` | `NewDatabaseError(operation, table, cause)` |
+| `NetworkError` | `NewNetworkError(url, code)` / `NewNetworkTimeoutError(url)` |
+| `BusinessLogicError` | `NewBusinessLogicError(rule, details)` |
+| `ConfigError` | `NewConfigError(key, value, reason)` |
+| `AuthError` | `NewAuthError(operation, user, reason)` |
+| `RateLimitError` | `NewRateLimitError(resource, limit, current, retryAfter)` |
+
+> v2 起包名改为 `errtypes`（避免与标准库 `errors` 冲突）。旧的
+> `github.com/linkerlin/gotrycatch/errors` 路径仍是纯别名层，可继续编译，
+> 但新代码请使用 `errtypes`。
+
+## 自定义错误类型
+
+嵌入 `BaseError` 即可获得 File/Line/Function/Timestamp/Stack 字段与 ToMap 公共键：
 
 ```go
-func divideAndLog(a, b int) int {
-    tb := gotrycatch.TryWithResult(func() int {
-        gotrycatch.Assert(b != 0,
-            errors.NewValidationError("divisor", "cannot be zero", 1001))
-        return a / b
-    })
-
-    tb = gotrycatch.CatchWithResult[int, errors.ValidationError](tb, func(err errors.ValidationError) {
-        log.Printf("Validation error: %s", err.Message)
-    })
-
-    tb = gotrycatch.CatchAnyWithResult(tb, func(err interface{}) {
-        log.Printf("Unknown error: %v", err)
-    })
-
-    return tb.OrElse(0)
+type PaymentError struct {
+    errtypes.BaseError
+    OrderID string `json:"orderId"`
 }
 
-// 使用 OrElseGet 延迟计算默认值
-func computeWithDefault() int {
-    tb := gotrycatch.TryWithResult(func() int {
-        return expensiveComputation()
-    })
+func (e PaymentError) Error() string {
+    return fmt.Sprintf("payment failed for order %s (at %s:%d)", e.OrderID, e.File, e.Line)
+}
 
-    return tb.OrElseGet(func() int {
-        // 只有出错时才计算默认值
-        return computeFallbackValue()
-    })
+func (e PaymentError) ToMap() map[string]interface{} {
+    m := e.baseMap()
+    m["type"] = "PaymentError"
+    m["orderId"] = e.OrderID
+    return m
+}
+
+func NewPaymentError(orderID string) PaymentError {
+    return PaymentError{BaseError: errtypes.NewBase(), OrderID: orderID}
 }
 ```
 
-## 内置错误类型
-
-| 类型 | 构造函数 | 用途 |
-|------|----------|------|
-| `ValidationError` | `NewValidationError(field, message, code)` | 数据验证错误 |
-| `DatabaseError` | `NewDatabaseError(operation, table, cause)` | 数据库操作错误 |
-| `NetworkError` | `NewNetworkError(url, code)` | HTTP 错误 |
-| `NetworkError` | `NewNetworkTimeoutError(url)` | 网络超时 |
-| `BusinessLogicError` | `NewBusinessLogicError(rule, details)` | 业务规则违规 |
-| `ConfigError` | `NewConfigError(key, value, reason)` | 配置错误 |
-| `AuthError` | `NewAuthError(operation, user, reason)` | 认证授权错误 |
-| `RateLimitError` | `NewRateLimitError(resource, limit, current, retryAfter)` | 限流错误 |
-
-所有错误类型都包含：`File`, `Line`, `Function`, `Timestamp`, `Stack`
+`errtypes.NewBase()` 自动捕获调用方位置与堆栈（指向用户调用行）。实现 `Error()`/`ToMap()` 后即可与内置类型同等使用；`ToMap` 可先调用 `baseMap()` 获取公共键。若需封装更深的构造函数链，可参考内置类型在包内直接使用 `newBase(skip)`。
 
 ## 运行示例
 
 ```bash
-# 快速演示
+# 演示程序（11个Demo：基本用法/错误信息/结构化输出/TryWithResult/调试模式/断言/状态查询/错误链/真实场景/v2 Run）
 go run ./cmd/demo
-
-# 完整示例
-go run ./examples
 
 # 运行测试
 go test -v ./...
@@ -254,7 +242,7 @@ go test -race ./...
 
 ## 注意事项
 
-1. **Catch 是函数，不是方法**：由于 Go 的限制，`Catch[T]` 必须写成 `gotrycatch.Catch[T](tb, handler)`
-2. **CatchAny 和 Finally 是方法**：可以链式调用 `tb.CatchAny(...).Finally(...)`
-3. **未处理的错误会重新抛出**：在 Finally 执行后
-4. **Catch 顺序很重要**：具体类型在前，CatchAny 在最后
+- 同一 `TryBlock` 上多次 `Catch`：按声明顺序匹配，第一个命中者处理，后续跳过
+- `Finally` 中 panic 会覆盖原始错误（与 Go 原生 defer 一致）
+- `Try`/`Run` 不捕获子 goroutine 的 panic（recover 是 goroutine 局部的）
+- `Catch[T]` 是精确类型断言；穿透 `%w` 包装请用 `CatchAs`/`OnAs`

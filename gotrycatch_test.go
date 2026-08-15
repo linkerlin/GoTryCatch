@@ -2,10 +2,32 @@ package gotrycatch
 
 import (
 	"errors"
+	"io"
+	"log"
 	"testing"
 
 	trycatcherrors "github.com/linkerlin/gotrycatch/errors"
 )
+
+// assertBaseFields 校验所有错误类型共有的 BaseError 字段（File/Line/Timestamp/Stack）与 ToMap 的 type 键。
+func assertBaseFields(t *testing.T, typeName string, err trycatcherrors.BaseError, m map[string]interface{}) {
+	t.Helper()
+	if err.File == "" {
+		t.Errorf("%s: Expected File to be populated", typeName)
+	}
+	if err.Line == 0 {
+		t.Errorf("%s: Expected Line to be populated", typeName)
+	}
+	if err.Timestamp.IsZero() {
+		t.Errorf("%s: Expected Timestamp to be populated", typeName)
+	}
+	if len(err.Stack) == 0 {
+		t.Errorf("%s: Expected Stack to be populated", typeName)
+	}
+	if m["type"] != typeName {
+		t.Errorf("%s: Expected ToMap type '%s', got %v", typeName, typeName, m["type"])
+	}
+}
 
 func TestTry_NoPanic(t *testing.T) {
 	tb := Try(func() {
@@ -100,35 +122,6 @@ func TestCatch_MultipleHandlers(t *testing.T) {
 	if !stringHandlerCalled {
 		t.Error("Expected string handler to be called")
 	}
-	if !tb.handled {
-		t.Error("Expected handled to be true")
-	}
-}
-
-func TestCatchWithReturn(t *testing.T) {
-	expectedErr := "test error"
-	expectedResult := map[string]string{"error": expectedErr}
-
-	tb := Try(func() {
-		panic(expectedErr)
-	})
-
-	result, tb := CatchWithReturn[string](tb, func(err string) interface{} {
-		return expectedResult
-	})
-
-	if result == nil {
-		t.Error("Expected result to be non-nil")
-	}
-
-	if resultMap, ok := result.(map[string]string); ok {
-		if resultMap["error"] != expectedErr {
-			t.Errorf("Expected result error %v, got %v", expectedErr, resultMap["error"])
-		}
-	} else {
-		t.Error("Expected result to be map[string]string")
-	}
-
 	if !tb.handled {
 		t.Error("Expected handled to be true")
 	}
@@ -231,30 +224,13 @@ func TestValidationError(t *testing.T) {
 		t.Errorf("Expected message 'invalid format', got %v", err.Message)
 	}
 
-	// 验证新增字段
-	if err.File == "" {
-		t.Error("Expected File to be populated")
-	}
-	if err.Line == 0 {
-		t.Error("Expected Line to be populated")
-	}
-	if err.Timestamp.IsZero() {
-		t.Error("Expected Timestamp to be populated")
-	}
-	if len(err.Stack) == 0 {
-		t.Error("Expected Stack to be populated")
-	}
+	// 验证基础字段与 ToMap
+	assertBaseFields(t, "ValidationError", err.BaseError, err.ToMap())
 
 	// 验证 Error() 方法包含位置信息
 	errStr := err.Error()
 	if errStr == "" {
 		t.Error("Expected non-empty error string")
-	}
-
-	// 验证 ToMap
-	m := err.ToMap()
-	if m["type"] != "ValidationError" {
-		t.Errorf("Expected type 'ValidationError', got %v", m["type"])
 	}
 
 	// 验证 ToJSON
@@ -282,26 +258,12 @@ func TestDatabaseError(t *testing.T) {
 		t.Errorf("Expected cause %v, got %v", cause, err.Cause)
 	}
 
-	// 验证新增字段
-	if err.File == "" {
-		t.Error("Expected File to be populated")
-	}
-	if err.Line == 0 {
-		t.Error("Expected Line to be populated")
-	}
-	if err.Timestamp.IsZero() {
-		t.Error("Expected Timestamp to be populated")
-	}
+	// 验证基础字段与 ToMap
+	assertBaseFields(t, "DatabaseError", err.BaseError, err.ToMap())
 
 	// 验证 Unwrap
 	if err.Unwrap() != cause {
 		t.Errorf("Expected Unwrap to return cause")
-	}
-
-	// 验证 ToMap
-	m := err.ToMap()
-	if m["type"] != "DatabaseError" {
-		t.Errorf("Expected type 'DatabaseError', got %v", m["type"])
 	}
 }
 
@@ -319,16 +281,9 @@ func TestNetworkError(t *testing.T) {
 		t.Errorf("Expected timeout to be false, got true")
 	}
 
-	// 验证新增字段
-	if err.File == "" {
-		t.Error("Expected File to be populated")
-	}
-	if err.Timestamp.IsZero() {
-		t.Error("Expected Timestamp to be populated")
-	}
-
-	// 验证 ToMap
+	// 验证基础字段与 ToMap
 	m := err.ToMap()
+	assertBaseFields(t, "NetworkError", err.BaseError, m)
 	if m["statusCode"] != 404 {
 		t.Errorf("Expected statusCode 404, got %v", m["statusCode"])
 	}
@@ -362,19 +317,8 @@ func TestBusinessLogicError(t *testing.T) {
 		t.Errorf("Expected details 'must be over 18', got %v", err.Details)
 	}
 
-	// 验证新增字段
-	if err.File == "" {
-		t.Error("Expected File to be populated")
-	}
-	if err.Timestamp.IsZero() {
-		t.Error("Expected Timestamp to be populated")
-	}
-
-	// 验证 ToMap
-	m := err.ToMap()
-	if m["type"] != "BusinessLogicError" {
-		t.Errorf("Expected type 'BusinessLogicError', got %v", m["type"])
-	}
+	// 验证基础字段与 ToMap
+	assertBaseFields(t, "BusinessLogicError", err.BaseError, err.ToMap())
 }
 
 // ============================================
@@ -395,25 +339,13 @@ func TestConfigError(t *testing.T) {
 		t.Errorf("Expected reason 'invalid URL format', got %v", err.Reason)
 	}
 
-	// 验证新增字段
-	if err.File == "" {
-		t.Error("Expected File to be populated")
-	}
-	if err.Timestamp.IsZero() {
-		t.Error("Expected Timestamp to be populated")
-	}
-
 	// 验证 Error() 方法
-	errStr := err.Error()
-	if errStr == "" {
+	if err.Error() == "" {
 		t.Error("Expected non-empty error string")
 	}
 
-	// 验证 ToMap 和 ToJSON
-	m := err.ToMap()
-	if m["type"] != "ConfigError" {
-		t.Errorf("Expected type 'ConfigError', got %v", m["type"])
-	}
+	// 验证基础字段与 ToMap/ToJSON
+	assertBaseFields(t, "ConfigError", err.BaseError, err.ToMap())
 
 	jsonBytes, jsonErr := err.ToJSON()
 	if jsonErr != nil {
@@ -438,19 +370,8 @@ func TestAuthError(t *testing.T) {
 		t.Errorf("Expected reason 'invalid password', got %v", err.Reason)
 	}
 
-	// 验证新增字段
-	if err.File == "" {
-		t.Error("Expected File to be populated")
-	}
-	if err.Timestamp.IsZero() {
-		t.Error("Expected Timestamp to be populated")
-	}
-
-	// 验证 ToMap
-	m := err.ToMap()
-	if m["type"] != "AuthError" {
-		t.Errorf("Expected type 'AuthError', got %v", m["type"])
-	}
+	// 验证基础字段与 ToMap
+	assertBaseFields(t, "AuthError", err.BaseError, err.ToMap())
 }
 
 func TestRateLimitError(t *testing.T) {
@@ -470,19 +391,8 @@ func TestRateLimitError(t *testing.T) {
 		t.Errorf("Expected retryAfter 60, got %v", err.RetryAfter)
 	}
 
-	// 验证新增字段
-	if err.File == "" {
-		t.Error("Expected File to be populated")
-	}
-	if err.Timestamp.IsZero() {
-		t.Error("Expected Timestamp to be populated")
-	}
-
-	// 验证 ToMap
-	m := err.ToMap()
-	if m["type"] != "RateLimitError" {
-		t.Errorf("Expected type 'RateLimitError', got %v", m["type"])
-	}
+	// 验证基础字段与 ToMap
+	assertBaseFields(t, "RateLimitError", err.BaseError, err.ToMap())
 }
 
 func TestErrorIsMethod(t *testing.T) {
@@ -674,7 +584,7 @@ func TestGetErrorType(t *testing.T) {
 	tb = Try(func() {
 		panic(trycatcherrors.NewValidationError("field", "msg", 1001))
 	})
-	expectedType := "errors.ValidationError"
+	expectedType := "errtypes.ValidationError" // v2: package renamed errors → errtypes
 	if tb.GetErrorType() != expectedType {
 		t.Errorf("Expected '%s', got '%s'", expectedType, tb.GetErrorType())
 	}
@@ -702,6 +612,36 @@ func TestSetDebug(t *testing.T) {
 
 	// 恢复原状态
 	SetDebug(originalDebug)
+}
+
+func TestSetDebug_Concurrent(t *testing.T) {
+	// SetDebug 与 Try/Catch 并发使用不得触发 data race（-race 下验证）
+	originalDebug := IsDebug()
+	defer SetDebug(originalDebug)
+
+	// 静音调试日志，避免测试输出被并发日志淹没
+	originalLogger := debugLogger
+	debugLogger = log.New(io.Discard, "", 0)
+	defer func() { debugLogger = originalLogger }()
+
+	const goroutines = 10
+	const iterations = 100
+
+	done := make(chan struct{}, goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func(on bool) {
+			for i := 0; i < iterations; i++ {
+				SetDebug(on)
+				_ = IsDebug()
+				tb := Try(func() { panic("probe") })
+				tb = Catch[string](tb, func(err string) {})
+			}
+			done <- struct{}{}
+		}(g%2 == 0)
+	}
+	for g := 0; g < goroutines; g++ {
+		<-done
+	}
 }
 
 func TestAssert(t *testing.T) {
@@ -1248,29 +1188,6 @@ func TestCatch_OrderMatters(t *testing.T) {
 	}
 }
 
-func TestCatchWithReturn_WithPanic(t *testing.T) {
-	// When CatchWithReturn handler panics, the panic should propagate
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("Expected panic to propagate from handler")
-		} else if r != "handler panic" {
-			t.Errorf("Expected 'handler panic', got %v", r)
-		}
-	}()
-
-	tb := Try(func() {
-		panic("test error")
-	})
-
-	result, _ := CatchWithReturn[string](tb, func(err string) interface{} {
-		panic("handler panic")
-	})
-
-	// Should not reach here
-	_ = result
-	t.Error("Should not reach this line")
-}
-
 func TestTryWithResult_NilPanic(t *testing.T) {
 	tb := TryWithResult(func() int {
 		panic(nil)
@@ -1583,7 +1500,7 @@ func TestTryBlockWithResult_Finally_NilTryBlock(t *testing.T) {
 
 func TestTryBlockWithResult_Finally_UnhandledErrorRethrow(t *testing.T) {
 	defer func() {
-		if r := recover(); r != r {
+		if r := recover(); r != "unhandled" {
 			t.Errorf("Expected panic with 'unhandled', got %v", r)
 		}
 	}()
@@ -1656,101 +1573,6 @@ func TestCatchWithResult_NonMatchingType(t *testing.T) {
 	}
 	if tb.IsHandled() {
 		t.Error("Error should not be marked as handled")
-	}
-}
-
-func TestCatchWithReturn_BasicUsage(t *testing.T) {
-	tb := Try(func() {
-		panic("error")
-	})
-
-	result, tb := CatchWithReturn(tb, func(err string) interface{} {
-		return "recovered: " + err
-	})
-
-	if result != "recovered: error" {
-		t.Errorf("Expected 'recovered: error', got %v", result)
-	}
-	if !tb.IsHandled() {
-		t.Error("Expected error to be handled")
-	}
-}
-
-func TestCatchWithReturn_NilTryBlock(t *testing.T) {
-	var nilTb *TryBlock
-
-	result, tb := CatchWithReturn(nilTb, func(err string) interface{} {
-		return "should not be called"
-	})
-
-	if result != nil {
-		t.Errorf("Expected nil result, got %v", result)
-	}
-	if tb == nil {
-		t.Error("Expected non-nil TryBlock for nil input")
-	}
-}
-
-func TestCatchWithReturn_NilHandler(t *testing.T) {
-	tb := Try(func() {
-		panic("error")
-	})
-
-	result, returnedTb := CatchWithReturn[string](tb, nil)
-	if result != nil {
-		t.Errorf("Expected nil result, got %v", result)
-	}
-	if returnedTb != tb {
-		t.Error("Expected same TryBlock when handler is nil")
-	}
-}
-
-func TestCatchWithReturn_NonMatchingType(t *testing.T) {
-	tb := Try(func() {
-		panic(123) // int panic, not string
-	})
-
-	result, tb := CatchWithReturn(tb, func(err string) interface{} {
-		return "should not be called"
-	})
-
-	if result != nil {
-		t.Errorf("Expected nil result for non-matching type, got %v", result)
-	}
-	if tb.IsHandled() {
-		t.Error("Error should not be marked as handled")
-	}
-}
-
-func TestCatchWithReturn_NoError(t *testing.T) {
-	tb := Try(func() {
-		// No panic
-	})
-
-	result, _ := CatchWithReturn(tb, func(err string) interface{} {
-		return "should not be called"
-	})
-
-	if result != nil {
-		t.Errorf("Expected nil result when no error, got %v", result)
-	}
-}
-
-func TestCatchWithReturn_AlreadyHandled(t *testing.T) {
-	tb := Try(func() {
-		panic("error")
-	})
-
-	tb = Catch[string](tb, func(err string) {
-		// First handler
-	})
-
-	result, _ := CatchWithReturn(tb, func(err string) interface{} {
-		return "should not be called"
-	})
-
-	if result != nil {
-		t.Errorf("Expected nil result when already handled, got %v", result)
 	}
 }
 
@@ -1829,28 +1651,11 @@ func TestFinally_NoPanicNoError(t *testing.T) {
 	}
 }
 
-func TestCatchWithReturn_TypeMatch(t *testing.T) {
-	tb := Try(func() {
-		panic("string error")
-	})
-
-	result, tb := CatchWithReturn(tb, func(err string) interface{} {
-		return "handled: " + err
-	})
-
-	if result != "handled: string error" {
-		t.Errorf("Expected 'handled: string error', got %v", result)
-	}
-	if !tb.IsHandled() {
-		t.Error("Expected error to be handled")
-	}
-}
-
 func TestVersion_Exists(t *testing.T) {
 	if Version == "" {
 		t.Error("Version should not be empty")
 	}
-	if Version != "1.3.0" {
+	if Version != "2.0.0" {
 		t.Logf("Version is %s", Version)
 	}
 }

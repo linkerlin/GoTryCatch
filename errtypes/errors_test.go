@@ -1,4 +1,4 @@
-package errors
+package errtypes
 
 import (
 	"encoding/json"
@@ -12,6 +12,30 @@ import (
 // ============================================
 // Edge Case Tests for Error Types
 // ============================================
+
+func TestNewBase_Attribution(t *testing.T) {
+	// NewBase is exported for user-defined types: with one constructor layer
+	// in between, the location must point at the user's call site.
+	base := newCustomBase()
+	if base.File == "" || base.Line == 0 {
+		t.Errorf("Expected File/Line populated, got %s:%d", base.File, base.Line)
+	}
+	if len(base.Stack) == 0 {
+		t.Error("Expected Stack populated")
+	}
+	if !strings.HasSuffix(base.File, "errors_test.go") {
+		t.Errorf("Expected test file attribution, got %s", base.File)
+	}
+	if !strings.Contains(base.Stack[0], "errors_test.go") {
+		t.Errorf("Expected stack to reference test file, got %q", base.Stack[0])
+	}
+}
+
+type customTestErr struct{ BaseError }
+
+func newCustomBase() BaseError {
+	return NewBase()
+}
 
 func TestValidationError_EmptyFields(t *testing.T) {
 	err := NewValidationError("", "", 0)
@@ -116,7 +140,7 @@ type wrappedError struct {
 	cause error
 }
 
-func (e *wrappedError) Error() string   { return e.msg }
+func (e *wrappedError) Error() string { return e.msg }
 func (e *wrappedError) Unwrap() error { return e.cause }
 
 func TestNetworkError_ZeroStatusCode(t *testing.T) {

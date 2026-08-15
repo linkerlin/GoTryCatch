@@ -26,36 +26,119 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"reflect"
+	"runtime"
+	"sync/atomic"
 )
 
 // Version is the current version of the gotrycatch library.
-const Version = "1.3.0"
+const Version = "2.0.0"
 
-// Global debug mode flag
-var debugMode = false
+// Global debug mode flag (atomic: SetDebug may be called concurrently with Try/Catch)
+var debugMode atomic.Bool
 var debugLogger = log.New(os.Stderr, "[gotrycatch] ", log.LstdFlags)
 
 // SetDebug enables or disables debug mode. When enabled, type matching and exception handling details are logged.
 func SetDebug(enabled bool) {
-	debugMode = enabled
+	debugMode.Store(enabled)
 }
 
 // IsDebug returns whether debug mode is currently enabled.
 func IsDebug() bool {
-	return debugMode
+	return debugMode.Load()
 }
 
 // debugLog outputs debug messages when debug mode is enabled.
 func debugLog(format string, args ...interface{}) {
-	if debugMode {
+	if debugMode.Load() {
 		debugLogger.Printf(format, args...)
 	}
 }
 
-// TryBlock represents a try block that can catch and handle panics
-type TryBlock struct {
+// ============================================
+// Shared dispatch core (embedded by both TryBlock types)
+// ============================================
+
+// blockCore carries the err/handled state and the dispatch logic shared by
+// TryBlock and TryBlockWithResult. Unexported; both public types embed it.
+type blockCore struct {
 	err     interface{}
 	handled bool
+}
+
+// callers captures the calling stack as program counters, for lazy
+// formatting by PanicError.Stack. Called from within the recovering defer,
+// the frames below runtime.gopanic still point at the panic site, so the
+// resulting stack starts at (or near) where the panic happened.
+func callers() []uintptr {
+	const maxDepth = 32
+	pcs := make([]uintptr, maxDepth)
+	n := runtime.Callers(5, pcs)
+	return pcs[:n]
+}
+
+// asError bridges the captured panic value to the error world:
+// error panics are returned as-is, other values are wrapped in *PanicError.
+// The classic Try chain does not record a stack (keep the panic path lean);
+// use Run to get a *PanicError with a stack.
+func (c *blockCore) asError() error {
+	if c == nil || c.err == nil {
+		return nil
+	}
+	return toError(c.err, nil)
+}
+
+// dispatch is the shared heart of the Catch family: when an unhandled error is
+// present and matches type T, it runs the handler, marks the error handled and
+// returns the handler's result. The handler's return value is only used by
+// CatchWithReturn; other callers wrap their handler to return nil.
+// If the handler itself panics, the panic propagates and the error stays
+// unhandled (same as the pre-1.4 behavior).
+func dispatch[T any](label string, c *blockCore, handler func(T) interface{}) (result interface{}, matched bool) {
+	if c == nil || c.err == nil || c.handled {
+		return nil, false
+	}
+	err, ok := c.err.(T)
+	if !ok {
+		if debugMode.Load() {
+			var zero T
+			debugLog("%s: type %T does not match target type %T", label, c.err, zero)
+		}
+		return nil, false
+	}
+	if debugMode.Load() {
+		debugLog("%s: type %T matched, calling handler", label, c.err)
+	}
+	result = handler(err)
+	c.handled = true
+	return result, true
+}
+
+// catchAny dispatches an unhandled error to a type-agnostic handler (CatchAny family).
+func (c *blockCore) catchAny(label string, handler func(interface{})) {
+	if c == nil || c.err == nil || c.handled {
+		return
+	}
+	debugLog("%s: handling error of type %T", label, c.err)
+	handler(c.err)
+	c.handled = true
+}
+
+// rethrow panics with the unhandled error, if any (Finally family).
+func (c *blockCore) rethrow(label string) {
+	if c != nil && c.err != nil && !c.handled {
+		debugLog("%s: re-throwing unhandled error of type %T: %v", label, c.err, c.err)
+		panic(c.err)
+	}
+}
+
+// ============================================
+// TryBlock - basic try/catch without return value
+// ============================================
+
+// TryBlock represents a try block that can catch and handle panics
+type TryBlock struct {
+	blockCore
 }
 
 // GetError returns the captured error, or nil if no error occurred.
@@ -106,6 +189,39 @@ func (tb *TryBlock) GetErrorType() string {
 	return fmt.Sprintf("%T", tb.err)
 }
 
+// Err returns the captured panic as an error, or nil if none occurred.
+// Error panics are returned as-is (zero overhead, wrapping preserved);
+// non-error panics are wrapped in *PanicError. This is the bridge that lets
+// a TryBlock flow through idiomatic `if err != nil` code and errors.Is/errors.As.
+func (tb *TryBlock) Err() error {
+	if tb == nil {
+		return nil
+	}
+	return tb.blockCore.asError()
+}
+
+// CanonicalErrorType returns a normalized, pointer-free short type name of
+// the captured error (e.g. "ValidationError" for both ValidationError and
+// *ValidationError). Returns "" if there is no error. Aimed at Agent-side
+// error-type dispatch.
+func (tb *TryBlock) CanonicalErrorType() string {
+	if tb == nil || tb.err == nil {
+		return ""
+	}
+	return canonicalType(tb.err)
+}
+
+func canonicalType(v interface{}) string {
+	t := reflect.TypeOf(v)
+	for t != nil && t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t == nil {
+		return fmt.Sprintf("%T", v)
+	}
+	return t.Name()
+}
+
 // Try executes the given function and captures any panic that occurs.
 // It returns a TryBlock that can be used with Catch and Finally methods.
 func Try(fn func()) *TryBlock {
@@ -128,6 +244,9 @@ func Try(fn func()) *TryBlock {
 // Catch handles panics of the specified type T.
 // If the panic value can be cast to type T, the handler function is called.
 // Returns the same TryBlock to allow chaining multiple Catch calls.
+//
+// Note: Catch is an exact type assertion. To match through error wrapping
+// (fmt.Errorf("%w", ...)) or value/pointer variants, use CatchAs.
 func Catch[T any](tb *TryBlock, handler func(T)) *TryBlock {
 	if tb == nil {
 		debugLog("Catch: TryBlock is nil, returning empty TryBlock")
@@ -139,43 +258,11 @@ func Catch[T any](tb *TryBlock, handler func(T)) *TryBlock {
 		return tb
 	}
 
-	if tb.err != nil && !tb.handled {
-		if err, ok := tb.err.(T); ok {
-			debugLog("Catch: type %T matched, calling handler", tb.err)
-			handler(err)
-			tb.handled = true
-		} else {
-			debugLog("Catch: type %T does not match target type %T", tb.err, *new(T))
-		}
-	}
+	dispatch("Catch", &tb.blockCore, func(err T) interface{} {
+		handler(err)
+		return nil
+	})
 	return tb
-}
-
-// CatchWithReturn handles panics of the specified type T and allows the handler to return a value.
-// If the panic value can be cast to type T, the handler function is called and its return value
-// is returned along with the TryBlock.
-func CatchWithReturn[T any](tb *TryBlock, handler func(T) interface{}) (interface{}, *TryBlock) {
-	if tb == nil {
-		debugLog("CatchWithReturn: TryBlock is nil, returning empty TryBlock")
-		return nil, &TryBlock{}
-	}
-
-	if handler == nil {
-		debugLog("CatchWithReturn: handler is nil, returning TryBlock unchanged")
-		return nil, tb
-	}
-
-	if tb.err != nil && !tb.handled {
-		if err, ok := tb.err.(T); ok {
-			debugLog("CatchWithReturn: type %T matched, calling handler", tb.err)
-			result := handler(err)
-			tb.handled = true
-			return result, tb
-		} else {
-			debugLog("CatchWithReturn: type %T does not match target type %T", tb.err, *new(T))
-		}
-	}
-	return nil, tb
 }
 
 // CatchAny handles any unhandled panic, regardless of type.
@@ -191,11 +278,7 @@ func (tb *TryBlock) CatchAny(handler func(interface{})) *TryBlock {
 		return tb
 	}
 
-	if tb.err != nil && !tb.handled {
-		debugLog("CatchAny: handling error of type %T", tb.err)
-		handler(tb.err)
-		tb.handled = true
-	}
+	tb.catchAny("CatchAny", handler)
 	return tb
 }
 
@@ -213,10 +296,7 @@ func (tb *TryBlock) Finally(fn func()) {
 	}
 
 	defer fn()
-	if tb.err != nil && !tb.handled {
-		debugLog("Finally: re-throwing unhandled error of type %T: %v", tb.err, tb.err)
-		panic(tb.err) // Re-throw unhandled exception
-	}
+	tb.rethrow("Finally")
 }
 
 // Throw creates a panic with the given value.
@@ -246,9 +326,8 @@ func AssertNoError(err error, msg string) {
 
 // TryBlockWithResult represents a try block that captures both a return value and any panic.
 type TryBlockWithResult[T any] struct {
-	result  T
-	err     interface{}
-	handled bool
+	result T
+	blockCore
 }
 
 // GetResult returns the result of the executed function.
@@ -296,6 +375,33 @@ func (tb *TryBlockWithResult[T]) String() string {
 	return fmt.Sprintf("TryBlockWithResult{result: %v, err: %T(%v), handled: %v}", tb.result, tb.err, tb.err, tb.handled)
 }
 
+// GetErrorType returns the type name of the captured error (e.g., "errors.ValidationError").
+// Returns an empty string if the TryBlockWithResult is nil or no error was captured.
+func (tb *TryBlockWithResult[T]) GetErrorType() string {
+	if tb == nil || tb.err == nil {
+		return ""
+	}
+	return fmt.Sprintf("%T", tb.err)
+}
+
+// Err returns the captured panic as an error, or nil if none occurred.
+// Error panics are returned as-is; non-error panics are wrapped in *PanicError.
+func (tb *TryBlockWithResult[T]) Err() error {
+	if tb == nil {
+		return nil
+	}
+	return tb.blockCore.asError()
+}
+
+// CanonicalErrorType returns a normalized, pointer-free short type name of
+// the captured error (e.g. "ValidationError"). Returns "" if there is no error.
+func (tb *TryBlockWithResult[T]) CanonicalErrorType() string {
+	if tb == nil || tb.err == nil {
+		return ""
+	}
+	return canonicalType(tb.err)
+}
+
 // TryWithResult executes the given function and captures both the return value and any panic.
 func TryWithResult[T any](fn func() T) *TryBlockWithResult[T] {
 	tb := &TryBlockWithResult[T]{}
@@ -327,15 +433,10 @@ func CatchWithResult[T any, E any](tb *TryBlockWithResult[T], handler func(E)) *
 		return tb
 	}
 
-	if tb.err != nil && !tb.handled {
-		if err, ok := tb.err.(E); ok {
-			debugLog("CatchWithResult: type %T matched, calling handler", tb.err)
-			handler(err)
-			tb.handled = true
-		} else {
-			debugLog("CatchWithResult: type %T does not match target type %T", tb.err, *new(E))
-		}
-	}
+	dispatch("CatchWithResult", &tb.blockCore, func(err E) interface{} {
+		handler(err)
+		return nil
+	})
 	return tb
 }
 
@@ -352,11 +453,7 @@ func CatchAnyWithResult[T any](tb *TryBlockWithResult[T], handler func(interface
 		return tb
 	}
 
-	if tb.err != nil && !tb.handled {
-		debugLog("CatchAnyWithResult: handling error of type %T", tb.err)
-		handler(tb.err)
-		tb.handled = true
-	}
+	tb.catchAny("CatchAnyWithResult", handler)
 	return tb
 }
 
@@ -380,10 +477,7 @@ func (tb *TryBlockWithResult[T]) Finally(fn func()) T {
 	}
 
 	defer fn()
-	if tb.err != nil && !tb.handled {
-		debugLog("Finally: re-throwing unhandled error of type %T: %v", tb.err, tb.err)
-		panic(tb.err)
-	}
+	tb.rethrow("Finally")
 	return tb.result
 }
 
@@ -417,8 +511,13 @@ func (tb *TryBlockWithResult[T]) OrElse(defaultValue T) T {
 
 // OrElseGet returns the result if successful, or calls the supplier function to get a default value if an error occurred.
 // Also calls supplier if the TryBlockWithResult is nil.
+// If supplier is nil, returns the zero value of T.
 func (tb *TryBlockWithResult[T]) OrElseGet(supplier func() T) T {
 	if tb == nil || tb.err != nil {
+		if supplier == nil {
+			var zero T
+			return zero
+		}
 		return supplier()
 	}
 	return tb.result
